@@ -1,0 +1,22 @@
+# Python / Django
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+db.sqlite3
+
+# Uploaded shelf photos and the spine crops cut from them (MEDIA_ROOT)
+media/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Node / Expo
+node_modules/
+.expo/
+*.log
+
+# OS
+.DS_Store
