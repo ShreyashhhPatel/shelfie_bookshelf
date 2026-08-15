@@ -3,6 +3,7 @@
 from rest_framework import serializers
 
 from .models import CatalogBook, Detection, LibraryBook, Scan
+from .services.vlm_read import ReadErrorCode
 
 
 class CatalogBookSerializer(serializers.ModelSerializer):
@@ -115,6 +116,7 @@ class ScanSerializer(serializers.ModelSerializer):
     detections = DetectionSerializer(many=True, read_only=True)
     image_url = serializers.SerializerMethodField()
     counts = serializers.SerializerMethodField()
+    is_retryable = serializers.SerializerMethodField()
 
     class Meta:
         model = Scan
@@ -122,6 +124,8 @@ class ScanSerializer(serializers.ModelSerializer):
             'id',
             'status',
             'error',
+            'error_code',
+            'is_retryable',
             'image_url',
             'timings',
             'counts',
@@ -135,6 +139,19 @@ class ScanSerializer(serializers.ModelSerializer):
             return None
         request = self.context.get('request')
         return request.build_absolute_uri(scan.image.url) if request else scan.image.url
+
+    def get_is_retryable(self, scan) -> bool:
+        """Whether trying the same photo again could plausibly work.
+
+        Computed here rather than left to the client, so the rule lives with
+        the codes it describes instead of being duplicated per platform.
+        """
+        if not scan.error_code:
+            return False
+        try:
+            return ReadErrorCode(scan.error_code).is_retryable
+        except ValueError:
+            return False
 
     def get_counts(self, scan) -> dict:
         """Pre-counted so the client does not have to filter the list itself."""

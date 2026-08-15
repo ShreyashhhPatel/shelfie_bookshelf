@@ -120,8 +120,15 @@ export default function ResultsScreen({ route }: RootStackScreenProps<'Results'>
   if (scan.status === 'failed') {
     return (
       <View style={styles.centered}>
-        <Text style={styles.errorTitle}>Scan failed</Text>
+        <Text style={styles.errorTitle}>
+          {scan.error_code === 'rate_limited' ? 'Too many scans' : 'Scan failed'}
+        </Text>
         <Text style={styles.errorText}>{scan.error || 'No detail was recorded.'}</Text>
+        <Text style={styles.errorHint}>
+          {scan.is_retryable
+            ? 'This usually clears on its own. Scan the shelf again in a moment.'
+            : 'This needs fixing on the server before scanning will work.'}
+        </Text>
       </View>
     );
   }
@@ -274,6 +281,13 @@ const styles = StyleSheet.create({
   errorText: {
     color: '#5B6272',
     fontSize: 14,
+    textAlign: 'center',
+  },
+  errorHint: {
+    color: '#8C93A1',
+    fontSize: 13,
+    marginTop: 10,
+    maxWidth: 320,
     textAlign: 'center',
   },
 });

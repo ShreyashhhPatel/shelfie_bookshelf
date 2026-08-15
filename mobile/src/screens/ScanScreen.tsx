@@ -27,6 +27,7 @@ import { SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 
 import { ApiError, uploadScan } from '../api/client';
+import type { Scan } from '../api/types';
 import type { RootStackScreenProps } from '../navigation/types';
 
 type Source = 'camera' | 'library';
@@ -48,29 +49,53 @@ async function toJpeg(uri: string): Promise<string> {
 export default function ScanScreen({ navigation }: RootStackScreenProps<'Scan'>) {
   const [busy, setBusy] = useState<Source | 'uploading' | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  /**
+   * A pipeline failure comes back as a *successful* 201 whose Scan carries
+   * status 'failed' -- the resource was created, the work inside it did not
+   * finish. Holding it here shows the reason on this screen with a retry,
+   * rather than pushing the user to a Results screen with nothing on it.
+   */
+  const [failed, setFailed] = useState<Scan | null>(null);
+  /** The converted JPEG, kept so retry re-sends it without re-picking. */
+  const [pendingUri, setPendingUri] = useState<string | null>(null);
 
   const send = useCallback(
-    async (uri: string) => {
+    async (uri: string, alreadyJpeg = false) => {
       setBusy('uploading');
+      setFailed(null);
       try {
-        const jpeg = await toJpeg(uri);
+        const jpeg = alreadyJpeg ? uri : await toJpeg(uri);
         setPreview(jpeg);
+        setPendingUri(jpeg);
+
         const scan = await uploadScan(jpeg);
+
+        if (scan.status === 'failed') {
+          setFailed(scan);
+          return;
+        }
+
         // `replace`, not `navigate`: going back to a spent upload screen is
         // never what the user wants after a scan lands.
         navigation.replace('Results', { scanId: scan.id, scan });
       } catch (cause) {
+        // A transport failure, as opposed to a pipeline failure above. The
+        // server was never reached, so there is no Scan to report.
         const message =
           cause instanceof ApiError
             ? cause.message
             : 'Could not scan that photo. Try again.';
-        Alert.alert('Scan failed', message);
+        Alert.alert('Upload failed', message);
       } finally {
         setBusy(null);
       }
     },
     [navigation],
   );
+
+  const retry = useCallback(() => {
+    if (pendingUri) void send(pendingUri, true);
+  }, [pendingUri, send]);
 
   const pick = useCallback(
     async (source: Source) => {
@@ -127,7 +152,48 @@ export default function ScanScreen({ navigation }: RootStackScreenProps<'Scan'>)
         <Image source={{ uri: preview }} style={styles.preview} resizeMode="cover" />
       ) : null}
 
-      {uploading ? (
+      {failed ? (
+        <View style={styles.failure}>
+          <Text style={styles.failureTitle}>
+            {failed.error_code === 'rate_limited'
+              ? 'Too many scans'
+              : "Couldn't read this shelf"}
+          </Text>
+          {/* Server-authored and already user-facing: the raw provider payload
+              stays in the backend log. */}
+          <Text style={styles.failureBody}>{failed.error}</Text>
+
+          {failed.is_retryable ? (
+            <Pressable
+              style={({ pressed }) => [styles.button, pressed && styles.pressed]}
+              onPress={retry}
+            >
+              <Text style={styles.buttonText}>Try again</Text>
+            </Pressable>
+          ) : (
+            <Text style={styles.failureHint}>
+              Retrying will not help until this is fixed on the server.
+            </Text>
+          )}
+
+          <Pressable
+            style={({ pressed }) => [
+              styles.button,
+              styles.secondary,
+              pressed && styles.pressed,
+            ]}
+            onPress={() => {
+              setFailed(null);
+              setPreview(null);
+              setPendingUri(null);
+            }}
+          >
+            <Text style={[styles.buttonText, styles.secondaryText]}>
+              Use a different photo
+            </Text>
+          </Pressable>
+        </View>
+      ) : uploading ? (
         <View style={styles.busy}>
           <ActivityIndicator />
           <Text style={styles.busyText}>Detecting spines and reading them…</Text>
@@ -241,5 +307,22 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 4,
     textAlign: 'center',
+  },
+  failure: {
+    gap: 12,
+  },
+  failureTitle: {
+    color: '#9B2C2C',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  failureBody: {
+    color: '#5B6272',
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  failureHint: {
+    color: '#8C93A1',
+    fontSize: 13,
   },
 });

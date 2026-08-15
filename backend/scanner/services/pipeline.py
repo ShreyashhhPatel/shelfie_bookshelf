@@ -19,7 +19,7 @@ from django.db import transaction
 from ..models import Detection, Scan
 from .image_utils import load_image, prepare_crop
 from .matcher import catalog_entries, match
-from .vlm_read import VlmReadError, read_spines
+from .vlm_read import ReadErrorCode, VlmReadError, read_spines
 from .yolo_detect import detect_book_boxes
 
 logger = logging.getLogger(__name__)
@@ -103,13 +103,21 @@ def run_scan(scan: Scan) -> Scan:
 
     except VlmReadError as cause:
         scan.timings = timer.timings
-        scan.error = str(cause)
+        # The user gets the sentence; the provider's raw text stays in the log.
+        scan.error = cause.user_message
+        scan.error_code = cause.code.value
         _set_status(scan, Scan.Status.FAILED, timings=True, error=True)
-        logger.warning('Scan %s failed during read: %s', scan.pk, cause)
+        logger.warning(
+            'Scan %s failed during read (%s): %s', scan.pk, cause.code.value, cause.detail
+        )
 
     except Exception as cause:  # noqa: BLE001 - the record must carry the failure
         scan.timings = timer.timings
-        scan.error = f'{type(cause).__name__}: {cause}'
+        # Nothing below the read stage has a user-facing vocabulary yet, so
+        # anything reaching here is genuinely unexpected and says so plainly
+        # rather than leaking a traceback into the UI.
+        scan.error = 'Something went wrong processing this photo.'
+        scan.error_code = ReadErrorCode.UNKNOWN.value
         _set_status(scan, Scan.Status.FAILED, timings=True, error=True)
         logger.exception('Scan %s failed', scan.pk)
 
@@ -123,7 +131,7 @@ def _set_status(scan: Scan, status: str, timings: bool = False, error: bool = Fa
     if timings:
         fields.append('timings')
     if error:
-        fields.append('error')
+        fields.extend(['error', 'error_code'])
     scan.save(update_fields=fields)
 
 

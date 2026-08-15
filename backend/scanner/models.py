@@ -91,7 +91,14 @@ class Scan(models.Model):
         default=Status.PENDING,
         db_index=True,
     )
+    # User-facing sentence. Safe to render directly -- provider status codes
+    # and raw payloads go to the log, not here.
     error = models.TextField(blank=True)
+
+    # Machine-readable reason, so the client can branch without parsing prose.
+    # The one that matters is whether retrying will help: a rate limit clears
+    # on its own, a missing API key never does.
+    error_code = models.CharField(max_length=40, blank=True, db_index=True)
 
     # Milliseconds per pipeline stage, e.g. {"detect": 812, "read": 3140}.
     # Stored rather than logged because the interesting question -- which stage

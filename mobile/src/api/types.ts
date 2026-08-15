@@ -117,11 +117,31 @@ export interface ScanCounts {
   needs_review: number;
 }
 
+/**
+ * Mirrors `ReadErrorCode` on the backend. Why a scan failed.
+ *
+ * The split that matters is `is_retryable` on the Scan itself: a rate limit
+ * clears on its own, a missing API key never does, and offering "try again"
+ * for the second wastes the user's time.
+ */
+export type ScanErrorCode =
+  | 'not_configured'
+  | 'auth'
+  | 'rate_limited'
+  | 'timeout'
+  | 'unavailable'
+  | 'malformed_response'
+  | 'unknown';
+
 /** Mirrors `ScanSerializer`. */
 export interface Scan {
   id: number;
   status: ScanStatus;
+  /** A finished sentence, safe to render. Never a status code or payload. */
   error: string;
+  error_code: ScanErrorCode | '';
+  /** Server-computed: whether re-sending the same photo could plausibly work. */
+  is_retryable: boolean;
   image_url: string | null;
   /** Milliseconds per pipeline stage, e.g. { detect: 1786, read: 5934 }. */
   timings: Record<string, number>;

@@ -17,6 +17,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from enum import Enum
 from typing import Sequence
 
 from ..constants import (
@@ -48,8 +49,105 @@ Rules:
 - Ignore publisher names, series numbers, and library stickers."""
 
 
+class ReadErrorCode(str, Enum):
+    """Why a read failed, in terms the UI can act on.
+
+    The distinction that matters to a user is not which exception fired, it is
+    whether trying again in a moment will help. RATE_LIMITED and UNAVAILABLE
+    are worth a retry button; NOT_CONFIGURED and AUTH are not, and telling
+    someone to "try again" on a bad API key just wastes their time.
+    """
+
+    NOT_CONFIGURED = 'not_configured'
+    AUTH = 'auth'
+    RATE_LIMITED = 'rate_limited'
+    TIMEOUT = 'timeout'
+    UNAVAILABLE = 'unavailable'
+    MALFORMED_RESPONSE = 'malformed_response'
+    UNKNOWN = 'unknown'
+
+    @property
+    def is_retryable(self) -> bool:
+        return self in {
+            ReadErrorCode.RATE_LIMITED,
+            ReadErrorCode.TIMEOUT,
+            ReadErrorCode.UNAVAILABLE,
+        }
+
+
+# What the user is shown. Deliberately free of status codes and provider
+# names: "429 RESOURCE_EXHAUSTED" is not a sentence anyone can act on.
+READ_ERROR_MESSAGES = {
+    ReadErrorCode.NOT_CONFIGURED: (
+        'Spine reading is not configured on the server.'
+    ),
+    ReadErrorCode.AUTH: (
+        'The server was refused access to the reading service.'
+    ),
+    ReadErrorCode.RATE_LIMITED: (
+        'Too many scans in a short time. Wait about a minute and try again.'
+    ),
+    ReadErrorCode.TIMEOUT: (
+        'Reading the spines took too long. Try again, or use a photo of a '
+        'single shelf.'
+    ),
+    ReadErrorCode.UNAVAILABLE: (
+        'The reading service is temporarily unavailable. Try again shortly.'
+    ),
+    ReadErrorCode.MALFORMED_RESPONSE: (
+        'The reading service returned something unreadable. Try again.'
+    ),
+    ReadErrorCode.UNKNOWN: 'Could not read the spines in this photo.',
+}
+
+
 class VlmReadError(RuntimeError):
-    """The read stage failed. No partial results survive it."""
+    """The read stage failed. No partial results survive it.
+
+    Carries both a `code` for the client to branch on and a `detail` holding
+    the raw provider text, which stays in the log and out of the UI.
+    """
+
+    def __init__(self, code: ReadErrorCode, detail: str = ''):
+        self.code = code
+        self.detail = detail
+        super().__init__(READ_ERROR_MESSAGES[code])
+
+    @property
+    def user_message(self) -> str:
+        return READ_ERROR_MESSAGES[self.code]
+
+    @property
+    def is_retryable(self) -> bool:
+        return self.code.is_retryable
+
+
+def classify(exc: Exception) -> ReadErrorCode:
+    """Map a provider exception onto a code the UI understands.
+
+    Keyed on HTTP status where the SDK exposes one, because that is the only
+    part of a provider error that is stable. Message text is not.
+    """
+    status = getattr(exc, 'code', None)
+    if isinstance(status, int):
+        if status == 429:
+            return ReadErrorCode.RATE_LIMITED
+        if status in (401, 403):
+            return ReadErrorCode.AUTH
+        if status >= 500:
+            return ReadErrorCode.UNAVAILABLE
+        if status == 400:
+            # A malformed request is almost always a bad or absent key here,
+            # since the request body itself is built by this module.
+            return ReadErrorCode.AUTH
+
+    name = type(exc).__name__.lower()
+    if 'timeout' in name or 'deadline' in name:
+        return ReadErrorCode.TIMEOUT
+    if 'connect' in name:
+        return ReadErrorCode.UNAVAILABLE
+
+    return ReadErrorCode.UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -74,7 +172,10 @@ def get_client():
     """
     api_key = os.getenv('GEMINI_API_KEY', '').strip()
     if not api_key:
-        raise VlmReadError('GEMINI_API_KEY is not set. See backend/.env.example.')
+        raise VlmReadError(
+            ReadErrorCode.NOT_CONFIGURED,
+            'GEMINI_API_KEY is not set. See backend/.env.example.',
+        )
 
     from google import genai
 
@@ -95,10 +196,15 @@ def _parse(text: str, expected: int) -> list[SpineRead]:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as cause:
-        raise VlmReadError(f'Model did not return JSON: {cause}') from cause
+        raise VlmReadError(
+            ReadErrorCode.MALFORMED_RESPONSE, f'Not JSON: {cause}'
+        ) from cause
 
     if not isinstance(payload, list):
-        raise VlmReadError(f'Expected a JSON array, got {type(payload).__name__}.')
+        raise VlmReadError(
+            ReadErrorCode.MALFORMED_RESPONSE,
+            f'Expected a JSON array, got {type(payload).__name__}.',
+        )
 
     by_index: dict[int, SpineRead] = {}
     for item in payload:
@@ -137,8 +243,9 @@ def read_spines(crops: Sequence[bytes]) -> list[SpineRead]:
 
     if len(crops) > VLM_MAX_CROPS_PER_CALL:
         raise VlmReadError(
+            ReadErrorCode.UNKNOWN,
             f'{len(crops)} crops exceeds the {VLM_MAX_CROPS_PER_CALL} per-call '
-            f'limit. Splitting across calls is a later phase.'
+            f'limit. Splitting across calls is a later phase.',
         )
 
     from google.genai import types
@@ -168,9 +275,14 @@ def read_spines(crops: Sequence[bytes]) -> list[SpineRead]:
     except VlmReadError:
         raise
     except Exception as cause:
-        raise VlmReadError(f'Gemini call failed: {cause}') from cause
+        code = classify(cause)
+        # Full provider text goes to the log, never to the user.
+        logger.warning('Gemini call failed (%s): %s', code.value, cause)
+        raise VlmReadError(code, str(cause)) from cause
 
     if not response.text:
-        raise VlmReadError('Gemini returned an empty response.')
+        raise VlmReadError(
+            ReadErrorCode.MALFORMED_RESPONSE, 'Empty response body.'
+        )
 
     return _parse(response.text, len(crops))
