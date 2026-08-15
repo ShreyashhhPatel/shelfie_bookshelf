@@ -11,6 +11,12 @@ db.sqlite3
 # Uploaded shelf photos and the spine crops cut from them (MEDIA_ROOT)
 media/
 
+# Model weights. Downloaded on first run by ultralytics, not authored here --
+# 6.5MB for yolov8n alone, and larger checkpoints are much worse in a diff.
+*.pt
+*.pth
+*.onnx
+
 # Environment / secrets
 .env
 .env.*

@@ -1,17 +1,134 @@
-"""Text normalization shared by catalog loading and spine matching.
+"""Tunable constants and the text normalization the pipeline shares.
+
+Every number the pipeline can be tuned by lives here rather than inline at its
+call site, so changing behaviour means editing one file and reading one diff.
 
 Comparison never happens on raw strings. A spine read by the VLM carries
 whatever casing, punctuation, and accents the cover designer used; the catalog
 carries whatever the publisher used. Both sides go through the same functions
 here so the two are actually comparable.
 
-Nothing in this module knows about models or matching scores. It is pure text
-in, pure text out, so the matcher in a later phase can be tested against it
-without a database.
+Nothing in this module imports models, torch, or the network. It is pure text
+and numbers, so the matcher can be unit-tested against it without a database.
 """
 
 import re
 import unicodedata
+from pathlib import Path
+
+# Resolved from this file rather than settings.BASE_DIR so that importing
+# constants never requires Django to be configured first.
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+# --------------------------------------------------------------------------
+# Spine detection (phase 3)
+# --------------------------------------------------------------------------
+
+# Nano is the smallest YOLOv8 checkpoint. It is chosen for CPU latency, not
+# accuracy: detection has to be local and free so that the VLM read is the only
+# thing that costs money per scan. Swap to yolov8s.pt if recall proves too low.
+YOLO_MODEL_NAME = 'yolov8n.pt'
+YOLO_MODEL_DIR = BACKEND_DIR / 'models'
+YOLO_MODEL_PATH = YOLO_MODEL_DIR / YOLO_MODEL_NAME
+
+# COCO class 73. The checkpoint is pretrained on all 80 classes and a shelf
+# photo will happily return vases and potted plants, so everything else is
+# discarded before the boxes leave the detector.
+BOOK_CLASS_ID = 73
+
+# Deliberately low. A missed spine is invisible to the user and unrecoverable;
+# a false positive costs one VLM call and is caught at the review step. Recall
+# is worth more than precision here.
+DETECTION_CONFIDENCE_THRESHOLD = 0.15
+
+# IoU for non-max suppression. Shelved books touch, so boxes legitimately
+# overlap and the default 0.7 merges neighbouring spines into one.
+DETECTION_IOU_THRESHOLD = 0.45
+
+# A shelf photo can hold a lot of books; the ultralytics default of 300 is
+# generous enough, but stated here so it is not a hidden ceiling.
+MAX_DETECTIONS_PER_IMAGE = 300
+
+# --------------------------------------------------------------------------
+# Crop preparation (phase 3)
+# --------------------------------------------------------------------------
+
+# YOLO boxes clip tight to the spine and often shave the first or last glyph.
+# A few pixels of margin costs nothing and recovers characters the VLM needs.
+CROP_PADDING_PX = 6
+
+# Height/width above which a crop is treated as a vertical spine and rotated
+# upright. 1.6 is loose on purpose: a book photographed at an angle is less
+# tall-narrow than one shot square on, and under-rotating is the worse error.
+TALL_NARROW_ASPECT_RATIO = 1.6
+
+# Rotating clockwise puts the spine's foot at the left, which is how the large
+# majority of English-language spines are printed.
+SPINE_ROTATION_DEGREES = -90
+
+# Longest edge a crop is scaled up to before being sent for reading. Small
+# crops are the main cause of unreadable spines; upscaling past this stops
+# helping and just costs bytes.
+CROP_TARGET_LONG_EDGE = 640
+
+# Hosted vision models bill by image bytes, and a shelf photo straight off a
+# modern phone is far larger than any of them need.
+JPEG_QUALITY = 90
+MAX_IMAGE_LONG_EDGE = 2048
+
+# --------------------------------------------------------------------------
+# Catalog matching (phase 4)
+# --------------------------------------------------------------------------
+
+# Title carries the weight because it is what a spine reliably prints large.
+# Author is corroboration, not identification -- see AMBIGUITIES.md case 5,
+# where two different people share the name David Mitchell.
+TITLE_WEIGHT = 0.75
+AUTHOR_WEIGHT = 0.25
+
+# A read with no author at all cannot exceed this, no matter how perfect the
+# title match. "The Idiot" scores 1.0 on title against two different books
+# (case 4); without an author there is genuinely no way to choose, and the
+# honest output is a capped score that fails the auto-accept gate below.
+NO_AUTHOR_SCORE_CAP = 0.80
+
+# Within the author sub-score: a surname is far more legible on a spine than
+# initials and is weighted accordingly, but initials are what separate two
+# writers who share a surname.
+SURNAME_WEIGHT = 0.7
+INITIALS_WEIGHT = 0.3
+
+# Below this, two surnames are different people and the author contributes
+# nothing. Without a floor, fuzzy similarity between unrelated names ("austen"
+# vs "gibson" shares enough letters to score ~0.33) leaks in as partial credit,
+# and a confidently *wrong* author ends up scoring higher than no author at
+# all -- which is backwards. Above it, near-misses are treated as the OCR
+# errors they usually are.
+SURNAME_MISMATCH_THRESHOLD = 0.55
+
+# A spine that prints only the main title ("SAPIENS", with the subtitle set too
+# small to survive the crop) still has to find its rows. Matching against
+# main_title() is allowed, but discounted: it threw information away, so it may
+# surface a candidate for review and must never look as certain as a full hit.
+MAIN_TITLE_MATCH_PENALTY = 0.90
+
+# Below this a candidate is not worth showing the user even as a correction
+# option. Purely a noise filter.
+MIN_CANDIDATE_SCORE = 0.40
+
+# How many ranked candidates to keep on a Detection. Enough to populate a
+# review screen's correction list without storing the whole catalog.
+MAX_CANDIDATES = 5
+
+# The auto-accept gate. BOTH must hold.
+#
+# Score alone is not sufficient and this is the central claim of the matcher:
+# "Dune" scores ~1.0 against the row Dune *and* highly against Dune Messiah,
+# Children of Dune, and three more (case 1). A confident-looking top score
+# over a crowded field is a coin flip. The margin -- the gap to the runner-up
+# -- is what says the winner actually won.
+AUTO_ACCEPT_SCORE = 0.82
+AUTO_ACCEPT_MARGIN = 0.12
 
 # Dropped from the front of a title so "The Hobbit" and "Hobbit" collide. Only
 # ever stripped from the leading position: "A Wizard of Earthsea" loses its
