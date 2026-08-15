@@ -1,230 +1,199 @@
-"""The whole scan, start to finish.
-
-Photo in, Detection rows out. This is the only module that knows the order of
-the stages, and the only one that touches the database during a scan -- the
-services under it are all pure enough to run on a bare image.
-
-It runs synchronously inside the request. That is a deliberate limitation of
-this phase and the first thing that should move: the read stage alone is
-seconds of network wait, and SQLite serializes writes behind it.
+"""
+Orchestrates one scan end to end: convert -> detect -> crop/rotate -> batch
+VLM read -> match -> persist Detections. Synchronous by design -- see the
+"Honest caveat" in CONTEXT.md's data model section: a real product with
+thousands of users would push this onto a background queue (Celery +
+polling) instead of a synchronous request.
 """
 
-import logging
 import time
+from io import BytesIO
 from pathlib import Path
-from contextlib import contextmanager
 
 from django.core.files.base import ContentFile
-from django.db import transaction
+from django.core.files.storage import default_storage
 
-from ..models import Detection, Scan
-from .image_utils import load_image, prepare_crop, to_jpeg_bytes
-from .matcher import catalog_entries, match
-from .vlm_read import ReadErrorCode, VlmReadError, read_spines
-from .yolo_detect import SpineDetection, detect_book_boxes
-
-logger = logging.getLogger(__name__)
+from scanner.constants import CROP_PADDING_PX
+from scanner.models import CatalogBook, Detection, LibraryEntry, Scan
+from scanner.services import image_utils, matcher, vlm_read, yolo_detect
 
 
 class StageTimer:
-    """Collects wall-clock milliseconds per stage into a plain dict.
+    """Records per-stage duration in ms, plus a running total, for the
+    latency numbers CONTEXT.md wants in the README."""
 
-    Wall clock rather than CPU time on purpose: the stage that matters most is
-    the one waiting on a network round trip, which costs no CPU at all.
-    """
+    def __init__(self):
+        self._start = time.monotonic()
+        self._last = self._start
+        self.marks: dict[str, int] = {}
 
-    def __init__(self) -> None:
-        self.timings: dict[str, int] = {}
+    def mark(self, name: str) -> None:
+        now = time.monotonic()
+        self.marks[name] = round((now - self._last) * 1000)
+        self._last = now
 
-    @contextmanager
-    def stage(self, name: str):
-        started = time.perf_counter()
-        try:
-            yield
-        finally:
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            # Recorded even when the stage raised. A failed scan's timings are
-            # the most useful ones -- they say how far it got and where.
-            self.timings[name] = elapsed_ms
-            logger.info('stage %s took %dms', name, elapsed_ms)
-
-    @property
-    def total_ms(self) -> int:
-        return sum(self.timings.values())
+    def finalize(self) -> dict[str, int]:
+        self.marks["total_ms"] = round((time.monotonic() - self._start) * 1000)
+        return self.marks
 
 
-def run_scan(scan: Scan) -> Scan:
-    """Run the full pipeline for one uploaded photo.
-
-    Marks the scan failed and re-raises nothing: a failure is a state on the
-    record, not an exception the view has to catch. The client polls or reads
-    the response either way.
-    """
-    timer = StageTimer()
-
-    try:
-        with timer.stage('decode'):
-            scan.image.open('rb')
-            try:
-                image = load_image(scan.image.read())
-            finally:
-                scan.image.close()
-            # An iPhone upload is HEIC, which no browser renders and which the
-            # results screen would show as a broken image. The decoded frame is
-            # written back as JPEG so `image_url` is always displayable, and so
-            # the stored bytes match what the detector actually saw.
-            _normalize_stored_image(scan, image)
-
-        _set_status(scan, Scan.Status.DETECTING)
-        with timer.stage('detect'):
-            spines = detect_book_boxes(image)
-
-        # A close-up of one or two books, or an angle the detector dislikes,
-        # returns nothing. Reading the whole frame is a far better answer than
-        # an empty result: the model can find a title in it, and the worst case
-        # is one unreadable detection the user discards.
-        whole_image_fallback = not spines
-        if whole_image_fallback:
-            logger.info('Scan %s: no spines detected, reading the whole image', scan.pk)
-            width, height = image.size
-            spines = [SpineDetection(box=(0, 0, width, height), confidence=0.0)]
-
-        with timer.stage('crop'):
-            crops = (
-                # No cropping or rotating on the fallback path -- there is no
-                # box to pad and the frame is already the right way up.
-                [to_jpeg_bytes(image)]
-                if whole_image_fallback
-                else [prepare_crop(image, spine.box) for spine in spines]
-            )
-
-        _set_status(scan, Scan.Status.READING)
-        with timer.stage('read'):
-            reads = read_spines(crops)
-
-        _set_status(scan, Scan.Status.MATCHING)
-        with timer.stage('match'):
-            # Loaded once for the whole photo, not once per spine.
-            entries = catalog_entries()
-            results = [match(read.title, read.author, entries) for read in reads]
-
-        with timer.stage('persist'):
-            _persist(scan, spines, crops, reads, results)
-
-        scan.timings = timer.timings
-        _set_status(scan, Scan.Status.COMPLETE, timings=True)
-        logger.info(
-            'Scan %s complete: %d spine(s) in %dms', scan.pk, len(spines), timer.total_ms
-        )
-
-    except VlmReadError as cause:
-        scan.timings = timer.timings
-        # The user gets the sentence; the provider's raw text stays in the log.
-        scan.error = cause.user_message
-        scan.error_code = cause.code.value
-        _set_status(scan, Scan.Status.FAILED, timings=True, error=True)
-        logger.warning(
-            'Scan %s failed during read (%s): %s', scan.pk, cause.code.value, cause.detail
-        )
-
-    except Exception as cause:  # noqa: BLE001 - the record must carry the failure
-        scan.timings = timer.timings
-        # Nothing below the read stage has a user-facing vocabulary yet, so
-        # anything reaching here is genuinely unexpected and says so plainly
-        # rather than leaking a traceback into the UI.
-        scan.error = 'Something went wrong processing this photo.'
-        scan.error_code = ReadErrorCode.UNKNOWN.value
-        _set_status(scan, Scan.Status.FAILED, timings=True, error=True)
-        logger.exception('Scan %s failed', scan.pk)
-
-    return scan
-
-
-def _set_status(scan: Scan, status: str, timings: bool = False, error: bool = False):
-    """Narrow update so a long pipeline does not clobber concurrent writes."""
-    scan.status = status
-    fields = ['status', 'updated_at']
-    if timings:
-        fields.append('timings')
-    if error:
-        fields.extend(['error', 'error_code'])
-    scan.save(update_fields=fields)
-
-
-@transaction.atomic
-def _persist(scan, spines, crops, reads, results) -> list[Detection]:
-    """Write one Detection per spine.
-
-    Atomic so a photo is all-or-nothing: a half-written scan would show the
-    user a review screen missing books they can see in the photo.
-    """
-    detections: list[Detection] = []
-    by_index: dict[int, Detection] = {}
-
-    for spine, crop_bytes, read, result in zip(spines, crops, reads, results):
-        best = result.best
-
-        if read.is_empty:
-            # Nothing was read, so there is nothing to match. Distinct from a
-            # read that matched badly, and the review screen says so.
-            status = Detection.Status.NEEDS_REVIEW
-        elif result.should_auto_accept:
-            status = Detection.Status.AUTO_MATCHED
-        else:
-            status = Detection.Status.NEEDS_REVIEW
-
-        detection = Detection(
-            scan=scan,
-            bbox=list(spine.box),
-            confidence=spine.confidence,
-            raw_title=read.title,
-            raw_author=read.author,
-            candidates=result.as_dicts(),
-            margin=result.margin,
-            status=status,
-        )
-        if best is not None:
-            # Set whether or not it auto-matched. On a review row this is the
-            # pre-selected suggestion, not a decision -- `status` is what says
-            # which of the two it is.
-            detection.match_id = best.entry.id
-
-        detection.crop.save(
-            f'scan{scan.pk}-spine{spine.box[0]}.jpg',
-            ContentFile(crop_bytes),
-            save=False,
-        )
-        # Pointers are validated to reference strictly earlier crops, so the
-        # target is always already saved and has a pk.
-        if read.duplicate_of is not None:
-            original = by_index.get(read.duplicate_of)
-            if original is not None:
-                detection.duplicate_of = original
-
-        detection.save()
-        by_index[read.index] = detection
-        detections.append(detection)
-
-    return detections
-
-
-def _normalize_stored_image(scan: Scan, image) -> None:
-    """Rewrite the upload as JPEG if it arrived as anything else.
-
-    Only touches the file when the extension is not already JPEG, so a normal
-    upload costs nothing. The old file is deleted rather than orphaned.
-    """
-    name = (scan.image.name or '').lower()
-    if name.endswith(('.jpg', '.jpeg')):
-        return
-
-    previous = scan.image.name
-    scan.image.save(
-        f'{Path(previous).stem}.jpg',
-        ContentFile(to_jpeg_bytes(image)),
-        save=False,
+def _catalog_as_dicts() -> list[dict]:
+    return list(
+        CatalogBook.objects.all().values("id", "title", "author", "alt_titles", "spine_color", "spine_hex")
     )
-    scan.save(update_fields=['image', 'updated_at'])
-    if previous and previous != scan.image.name:
-        scan.image.storage.delete(previous)
-    logger.info('Scan %s: normalized %s to JPEG', scan.pk, previous)
+
+
+def _candidates_payload(result: matcher.MatchResult) -> list[dict]:
+    return [
+        {
+            "book_id": c.book["id"],
+            "title": c.book["title"],
+            "author": c.book["author"],
+            "score": round(c.score, 4),
+            # Carried onto the review card: when two candidates are a near-tie
+            # on title and author, colour is the thing the user can settle by
+            # glancing at the shelf.
+            "spine_color": c.book.get("spine_color", ""),
+            "spine_hex": c.book.get("spine_hex", ""),
+        }
+        for c in result.candidates
+    ]
+
+
+def apply_read_to_detection(detection: Detection, read: dict, catalog: list[dict]) -> Detection:
+    """Scores one VLM read against the catalog and updates `detection` in place (caller saves)."""
+    detection.read_title = read.get("title")
+    detection.read_author = read.get("author")
+    detection.read_spine_color = read.get("spine_color")
+
+    # Another crop of a book we already have a row for (the detector draws
+    # overlapping boxes around one spine). The row is kept rather than dropped
+    # -- nothing in this pipeline disappears silently -- but it leaves the
+    # review queue, so the user isn't asked about the same book three times.
+    if read.get("status") == "duplicate":
+        detection.status = Detection.STATUS_DISCARDED
+        detection.confidence = None
+        detection.margin = None
+        detection.candidates = []
+        detection.chosen_book = None
+        return detection
+
+    # Full-image-fallback reads have no "readable" key at all (see
+    # vlm_read.read_full_image_fallback) -- absence means "readable",
+    # unlike the batched-crop reads where it's always explicit.
+    if not read.get("readable", True) or not read.get("title"):
+        detection.status = Detection.STATUS_FAILED if read.get("status") == "failed" else Detection.STATUS_UNREADABLE
+        detection.confidence = None
+        detection.margin = None
+        detection.candidates = []
+        detection.chosen_book = None
+        return detection
+
+    result = matcher.match_book(read.get("title"), read.get("author"), catalog)
+    result = matcher.apply_color_tiebreak(result, read.get("spine_color"))
+    detection.status = result.status
+    detection.confidence = result.confidence
+    detection.margin = result.margin
+    detection.candidates = _candidates_payload(result)
+    detection.chosen_book_id = (
+        result.candidates[0].book["id"]
+        if result.status == matcher.STATUS_AUTO_ADDED and result.candidates
+        else None
+    )
+    return detection
+
+
+def auto_confirm_if_high_confidence(detection: Detection) -> None:
+    """
+    High-confidence matches auto-add straight to the library -- no human
+    step required. Everything else waits for a review-screen confirm/correct
+    action, so only ever-confirmed detections reach the library list.
+    """
+    if detection.status != Detection.STATUS_AUTO_ADDED:
+        return
+    LibraryEntry.objects.create(book_id=detection.chosen_book_id, source_detection=detection)
+
+
+def _create_detection(scan: Scan, box: tuple[int, int, int, int], crop_bytes: bytes, read: dict, catalog: list[dict]) -> Detection:
+    x1, y1, x2, y2 = box
+    detection = Detection(scan=scan, bbox={"x1": x1, "y1": y1, "x2": x2, "y2": y2})
+    apply_read_to_detection(detection, read, catalog)
+    detection.crop.save(f"crop_{scan.id}_{x1}_{y1}.jpg", ContentFile(crop_bytes), save=False)
+    detection.save()
+    auto_confirm_if_high_confidence(detection)
+    return detection
+
+
+def _create_detection_fullimage(scan: Scan, read: dict, catalog: list[dict]) -> Detection:
+    detection = Detection(scan=scan, bbox={})
+    apply_read_to_detection(detection, read, catalog)
+    detection.save()
+    auto_confirm_if_high_confidence(detection)
+    return detection
+
+
+def run_pipeline(scan: Scan) -> Scan:
+    timer = StageTimer()
+    scan.status = Scan.STATUS_PROCESSING
+    scan.save(update_fields=["status"])
+
+    scan.image.open("rb")
+    original_name = scan.image.name
+    jpeg_bytes = image_utils.to_jpeg_bytes(BytesIO(scan.image.read()))
+    timer.mark("convert_ms")
+
+    # Persist the normalized JPEG so `image_url` is always something a client
+    # can actually render. iPhones shoot HEIC, and the web picker hands the
+    # file through untouched (Chrome's canvas can't decode HEIC to re-encode
+    # it), so without this the results screen shows a broken hero image.
+    if not original_name.lower().endswith((".jpg", ".jpeg")):
+        stem = Path(original_name).stem
+        scan.image.save(f"{stem}.jpg", ContentFile(jpeg_bytes), save=True)
+        default_storage.delete(original_name)
+
+    image = image_utils.load_rgb_image(jpeg_bytes)
+    boxes = yolo_detect.detect_book_boxes(image)
+    timer.mark("detect_ms")
+
+    catalog = _catalog_as_dicts()
+
+    if not boxes:
+        scan.used_full_image_fallback = True
+        reads = vlm_read.read_full_image_fallback(jpeg_bytes)
+        timer.mark("vlm_ms")
+
+        if not reads:
+            scan.empty_result = True
+            scan.status = Scan.STATUS_DONE
+            scan.timings = timer.finalize()
+            scan.save(update_fields=["status", "timings", "used_full_image_fallback", "empty_result"])
+            return scan
+
+        for read in reads:
+            _create_detection_fullimage(scan, read, catalog)
+        timer.mark("match_ms")
+
+        scan.status = Scan.STATUS_DONE
+        scan.timings = timer.finalize()
+        scan.save(update_fields=["status", "timings", "used_full_image_fallback"])
+        return scan
+
+    crops = []
+    for box in boxes:
+        crop = image_utils.crop_with_padding(image, box, CROP_PADDING_PX)
+        crop = image_utils.rotate_if_tall_narrow(crop)
+        crops.append(crop)
+    crop_bytes_list = [image_utils.image_to_jpeg_bytes(c) for c in crops]
+    timer.mark("crop_ms")
+
+    reads = vlm_read.read_spines_batch(crop_bytes_list)
+    timer.mark("vlm_ms")
+
+    for box, crop_bytes, read in zip(boxes, crop_bytes_list, reads):
+        _create_detection(scan, box, crop_bytes, read, catalog)
+    timer.mark("match_ms")
+
+    scan.status = Scan.STATUS_DONE
+    scan.timings = timer.finalize()
+    scan.save(update_fields=["status", "timings", "used_full_image_fallback"])
+    return scan

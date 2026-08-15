@@ -1,167 +1,99 @@
-/**
- * The library: every book the user has confirmed they own.
- *
- * This is the end of the flow: it reads /api/library/ and can remove an entry.
- * Adding happens by scanning a shelf and confirming what came back, which is
- * what the empty state points at.
- */
+import { useFocusEffect } from "@react-navigation/native";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { useCallback, useState } from "react";
+import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
-import { useCallback, useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  FlatList,
-  Pressable,
-  RefreshControl,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { ApiError, deleteLibraryEntry, getLibrary } from "../api/client";
+import type { LibraryEntry } from "../api/types";
+import { alert } from "../lib/alert";
+import type { RootStackParamList } from "../navigation/types";
 
-import { ApiError, API_BASE_URL, deleteLibraryEntry, getLibrary } from '../api/client';
-import { confirm, notify } from '../lib/alert';
-import type { LibraryBook } from '../api/types';
-import StatusBadge from '../components/StatusBadge';
+type Props = NativeStackScreenProps<RootStackParamList, "Library">;
 
-type LoadState = 'loading' | 'ready' | 'error';
-
-export default function LibraryScreen() {
-  const [books, setBooks] = useState<LibraryBook[]>([]);
-  const [loadState, setLoadState] = useState<LoadState>('loading');
-  const [error, setError] = useState<ApiError | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [removingId, setRemovingId] = useState<number | null>(null);
+export default function LibraryScreen({ navigation }: Props) {
+  const [entries, setEntries] = useState<LibraryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    setError(null);
     try {
-      const page = await getLibrary();
-      setBooks(page.results);
-      setError(null);
-      setLoadState('ready');
-    } catch (cause) {
-      setError(
-        cause instanceof ApiError
-          ? cause
-          : new ApiError('Something went wrong loading your library.', 0),
-      );
-      setLoadState('error');
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await load();
-    setRefreshing(false);
-  }, [load]);
-
-  const onRemove = useCallback(async (book: LibraryBook) => {
-    const agreed = await confirm(
-      'Remove book',
-      `Remove "${book.title}" from your library?`,
-      'Remove',
-    );
-    if (!agreed) return;
-
-    setRemovingId(book.id);
-    // Optimism would be wrong here: a failed delete that has already vanished
-    // from the list reads as success. The row stays until the server agrees.
-    try {
-      await deleteLibraryEntry(book.id);
-      setBooks((current) => current.filter((entry) => entry.id !== book.id));
-    } catch (cause) {
-      notify(
-        'Could not remove',
-        cause instanceof ApiError ? cause.message : 'Could not remove that book.',
-      );
+      setEntries(await getLibrary());
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Couldn't load your library.");
     } finally {
-      setRemovingId(null);
+      setLoading(false);
     }
   }, []);
 
-  if (loadState === 'loading') {
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
+
+  const handleDelete = (entry: LibraryEntry) => {
+    alert("Remove book?", `Remove "${entry.title}" from your library?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Remove",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            await deleteLibraryEntry(entry.id);
+            setEntries((prev) => prev.filter((e) => e.id !== entry.id));
+          } catch (err) {
+            alert("Couldn't remove", err instanceof ApiError ? err.message : "Unknown error");
+          }
+        },
+      },
+    ]);
+  };
+
+  if (loading) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator />
+        <ActivityIndicator size="large" color="#2f6690" />
       </View>
     );
   }
 
-  if (loadState === 'error' && error) {
+  if (error) {
     return (
       <View style={styles.centered}>
-        <Text style={styles.errorTitle}>
-          {error.isNetworkError ? 'Cannot reach the server' : 'Something went wrong'}
-        </Text>
-        <Text style={styles.errorBody}>{error.message}</Text>
-        {error.isNetworkError ? (
-          <Text style={styles.errorHint}>
-            Trying {API_BASE_URL}. On a physical device this must be your computer's
-            LAN address, not localhost.
-          </Text>
-        ) : null}
-        <Pressable
-          style={({ pressed }) => [styles.retry, pressed && styles.pressed]}
-          onPress={() => {
-            setLoadState('loading');
-            void load();
-          }}
-        >
-          <Text style={styles.retryText}>Try again</Text>
-        </Pressable>
+        <Text style={styles.errorText}>{error}</Text>
+        <TouchableOpacity style={styles.retryButton} onPress={load}>
+          <Text style={styles.retryButtonText}>Retry</Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
   return (
     <FlatList
-      data={books}
-      keyExtractor={(book) => String(book.id)}
-      contentContainerStyle={books.length === 0 ? styles.emptyContainer : styles.list}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      style={styles.container}
+      contentContainerStyle={entries.length === 0 && styles.centered}
+      data={entries}
+      keyExtractor={(item) => String(item.id)}
+      refreshControl={<RefreshControl refreshing={false} onRefresh={load} />}
       ListEmptyComponent={
-        <View style={styles.empty}>
-          <Text style={styles.emptyTitle}>No books yet</Text>
-          <Text style={styles.emptyBody}>
-            Photograph a shelf with Scan, then confirm what it found. Books you
-            keep land here.
-          </Text>
-          <Text style={styles.emptyHint}>Pull down to refresh.</Text>
+        <View>
+          <Text style={styles.emptyTitle}>Your library is empty</Text>
+          <Text style={styles.emptySubtitle}>Scan a shelf to start building it.</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={() => navigation.navigate("Scan")}>
+            <Text style={styles.retryButtonText}>Scan a Shelf</Text>
+          </TouchableOpacity>
         </View>
       }
       renderItem={({ item }) => (
         <View style={styles.row}>
           <View style={styles.rowText}>
-            <Text style={styles.title} numberOfLines={2}>
-              {item.title}
-            </Text>
-            {item.author ? (
-              <Text style={styles.author} numberOfLines={1}>
-                {item.author}
-                {item.catalog_book?.year ? ` · ${item.catalog_book.year}` : ''}
-              </Text>
-            ) : null}
-            <View style={styles.badges}>
-              <StatusBadge status={item.source} />
-              {item.catalog_book === null ? (
-                <Text style={styles.uncatalogued}>Not in catalog</Text>
-              ) : null}
-            </View>
+            <Text style={styles.rowTitle}>{item.title}</Text>
+            {!!item.author && <Text style={styles.rowAuthor}>{item.author}</Text>}
           </View>
-          <Pressable
-            accessibilityLabel={`Remove ${item.title}`}
-            disabled={removingId === item.id}
-            onPress={() => void onRemove(item)}
-            style={({ pressed }) => [styles.remove, pressed && styles.pressed]}
-          >
-            {removingId === item.id ? (
-              <ActivityIndicator size="small" />
-            ) : (
-              <Text style={styles.removeText}>Remove</Text>
-            )}
-          </Pressable>
+          <TouchableOpacity onPress={() => handleDelete(item)} hitSlop={10}>
+            <Text style={styles.deleteText}>Remove</Text>
+          </TouchableOpacity>
         </View>
       )}
     />
@@ -169,115 +101,23 @@ export default function LibraryScreen() {
 }
 
 const styles = StyleSheet.create({
-  centered: {
-    alignItems: 'center',
-    flex: 1,
-    justifyContent: 'center',
-    padding: 32,
-  },
-  list: {
-    padding: 16,
-  },
-  emptyContainer: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    padding: 32,
-  },
-  empty: {
-    alignItems: 'center',
-  },
-  emptyTitle: {
-    color: '#1B1F27',
-    fontSize: 20,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  emptyBody: {
-    color: '#5B6272',
-    fontSize: 15,
-    lineHeight: 21,
-    marginBottom: 12,
-    maxWidth: 320,
-    textAlign: 'center',
-  },
-  emptyHint: {
-    color: '#8C93A1',
-    fontSize: 13,
-  },
-  errorTitle: {
-    color: '#1B1F27',
-    fontSize: 18,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  errorBody: {
-    color: '#5B6272',
-    fontSize: 15,
-    marginBottom: 8,
-    maxWidth: 340,
-    textAlign: 'center',
-  },
-  errorHint: {
-    color: '#8C93A1',
-    fontSize: 13,
-    marginBottom: 16,
-    maxWidth: 340,
-    textAlign: 'center',
-  },
-  retry: {
-    backgroundColor: '#1B1F27',
-    borderRadius: 8,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-  },
-  retryText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '600',
-  },
+  container: { flex: 1, backgroundColor: "#fff" },
+  centered: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 12 },
+  errorText: { fontSize: 16, color: "#8a3b3b", textAlign: "center" },
+  emptyTitle: { fontSize: 18, fontWeight: "700", color: "#1a2b3c", textAlign: "center" },
+  emptySubtitle: { fontSize: 14, color: "#5b6b7a", textAlign: "center", marginTop: 6, marginBottom: 16 },
+  retryButton: { backgroundColor: "#2f6690", paddingHorizontal: 24, paddingVertical: 12, borderRadius: 10 },
+  retryButtonText: { color: "#fff", fontWeight: "600" },
   row: {
-    alignItems: 'center',
-    borderBottomColor: '#ECEEF2',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    flexDirection: 'row',
-    gap: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
     paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#e4e9ee",
   },
-  rowText: {
-    flex: 1,
-    gap: 4,
-  },
-  title: {
-    color: '#1B1F27',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  author: {
-    color: '#5B6272',
-    fontSize: 14,
-  },
-  badges: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 2,
-  },
-  uncatalogued: {
-    color: '#8C93A1',
-    fontSize: 12,
-  },
-  remove: {
-    minWidth: 68,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  removeText: {
-    color: '#9B2C2C',
-    fontSize: 14,
-    fontWeight: '600',
-    textAlign: 'right',
-  },
-  pressed: {
-    opacity: 0.6,
-  },
+  rowText: { flex: 1 },
+  rowTitle: { fontSize: 16, fontWeight: "600", color: "#1a2b3c" },
+  rowAuthor: { fontSize: 13, color: "#5b6b7a", marginTop: 2 },
+  deleteText: { color: "#8a3b3b", fontSize: 13, fontWeight: "500" },
 });

@@ -1,270 +1,186 @@
-"""One test per ambiguity planted in catalog/catalog.csv.
-
-These run against the real CSV rather than a hand-built fixture, so a test
-failing means the matcher disagrees with the actual catalog the app ships,
-not with a convenient copy of it. No database, no network, no model.
-
-Read catalog/AMBIGUITIES.md alongside this file; the numbered cases there and
-the test classes here are the same six things.
-"""
-
 import pytest
 
 from scanner.constants import (
-    AUTO_ACCEPT_MARGIN,
-    AUTO_ACCEPT_SCORE,
-    NO_AUTHOR_SCORE_CAP,
+    AUTO_ACCEPT_MARGIN_THRESHOLD,
+    AUTO_ACCEPT_SCORE_THRESHOLD,
+    UNREADABLE_AUTHOR_CONFIDENCE_CAP,
 )
-from scanner.services.matcher import match
+from scanner.services import matcher
 
-# The `catalog` fixture lives in conftest.py -- test_vlm_parsing uses it too.
+# ---------- normalization ----------
 
 
-def titles(result, count=2):
-    return [candidate.entry.title for candidate in result.candidates[:count]]
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("The Hobbit", "hobbit"),
+        ("Dune", "dune"),
+        ("Foundation and Empire", "foundation and empire"),
+        ("Harry Potter and the Philosopher's Stone", "harry potter and the philosophers stone"),
+        ("  Snow   Crash  ", "snow crash"),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_normalize_text(raw, expected):
+    assert matcher.normalize_text(raw) == expected
 
 
-class TestCase1PrefixCollision:
-    """Dune / Dune Messiah / Children of Dune / God Emperor / Heretics."""
+def test_normalize_text_strips_accents():
+    assert matcher.normalize_text("Cien años de soledad") == "cien anos de soledad"
 
-    def test_exact_title_beats_its_own_sequels(self, catalog):
-        result = match('Dune', 'Frank Herbert', catalog)
 
-        assert result.best.entry.title == 'Dune'
-        assert result.should_auto_accept
+# ---------- author normalization: each variant form (ambiguity #6) ----------
 
-    def test_sequel_does_not_collapse_into_the_parent(self, catalog):
-        result = match('Dune Messiah', 'Frank Herbert', catalog)
 
-        assert result.best.entry.title == 'Dune Messiah'
-        assert result.should_auto_accept
+def test_author_lastname_firstname_matches_firstname_lastname():
+    a = matcher.normalize_author("Orwell, George")
+    b = matcher.normalize_author("George Orwell")
+    assert a.surname == b.surname == "orwell"
+    assert a.initials == b.initials == ("g",)
 
-    def test_scoring_is_symmetric(self, catalog):
-        """The heart of case 1.
 
-        A partial-ratio scorer treats "Dune" as a perfect hit against every
-        title containing it. Token-sort keeps the comparison symmetric, so the
-        sequels' extra words cost them.
-        """
-        result = match('Dune', 'Frank Herbert', catalog)
-        by_title = {c.entry.title: c.title_score for c in result.candidates}
+def test_author_glued_initials_match_spaced_lastname_first_initials():
+    a = matcher.normalize_author("J.K. Rowling")
+    b = matcher.normalize_author("Rowling, J. K.")
+    assert a.surname == b.surname == "rowling"
+    assert a.initials == b.initials == ("j", "k")
 
-        assert by_title['Dune'] == 1.0
-        assert by_title.get('Dune Messiah', 0.0) < 0.8
 
+def test_author_accented_matches_unaccented():
+    a = matcher.normalize_author("Gabriel García Márquez")
+    b = matcher.normalize_author("Gabriel Garcia Marquez")
+    assert a.surname == b.surname == "marquez"
+    assert a.initials == b.initials
 
-class TestCase2AlternateTitles:
-    """Northern Lights is shelved as The Golden Compass in the US."""
 
-    def test_alt_title_matches_at_full_strength(self, catalog):
-        result = match('The Golden Compass', 'Philip Pullman', catalog)
+def test_author_score_full_marks_for_matching_forms():
+    assert matcher.author_score("J.K. Rowling", "Rowling, J. K.") == pytest.approx(1.0)
+    assert matcher.author_score("George Orwell", "Orwell, George") == pytest.approx(1.0)
+    assert matcher.author_score("Gabriel García Márquez", "Gabriel Garcia Marquez") == pytest.approx(1.0)
 
-        assert result.best.entry.title == 'Northern Lights'
-        assert result.best.title_score == 1.0
-        assert result.should_auto_accept
 
-    def test_result_reports_which_title_matched(self, catalog):
-        """So the UI can show the name on the spine the reader is holding."""
-        result = match('The Golden Compass', 'Philip Pullman', catalog)
+def test_author_score_different_surname_is_zero():
+    assert matcher.author_score("Isaac Asimov", "Frank Herbert") == 0.0
 
-        assert result.best.matched_title == 'The Golden Compass'
 
-    def test_canonical_title_still_matches(self, catalog):
-        result = match('Northern Lights', 'Philip Pullman', catalog)
+def test_author_score_unparseable_is_none():
+    assert matcher.author_score(None, "George Orwell") is None
+    assert matcher.author_score("", "George Orwell") is None
 
-        assert result.best.entry.title == 'Northern Lights'
-        assert result.best.matched_title == 'Northern Lights'
 
+# ---------- alternate-title hit (ambiguity #2) ----------
 
-class TestCase3OmnibusContainment:
-    """One spine, several works. Containment is not a match key."""
 
-    def test_contained_volume_matches_the_standalone_row(self, catalog):
-        result = match('The Two Towers', 'J.R.R. Tolkien', catalog)
+def test_alt_title_hit_uk_us_edition():
+    score = matcher.title_score(
+        "Harry Potter and the Sorcerer's Stone",
+        "Harry Potter and the Philosopher's Stone",
+        ["Harry Potter and the Sorcerer's Stone"],
+    )
+    assert score > 0.95
 
-        assert result.best.entry.title == 'The Two Towers'
-        assert not result.best.entry.is_omnibus
 
-    def test_omnibus_matches_only_its_own_name(self, catalog):
-        result = match('The Lord of the Rings', 'J.R.R. Tolkien', catalog)
+def test_alt_title_hit_northern_lights_golden_compass():
+    score = matcher.title_score("The Golden Compass", "Northern Lights", ["The Golden Compass"])
+    assert score > 0.95
 
-        assert result.best.entry.title == 'The Lord of the Rings'
-        assert result.best.entry.is_omnibus
 
-    def test_alt_title_row_inside_an_omnibus_is_unaffected(self, catalog):
-        """Northern Lights is both a case 2 row and inside His Dark Materials."""
-        result = match('The Subtle Knife', 'Philip Pullman', catalog)
+# ---------- the substring trap (ambiguity #5) ----------
 
-        assert result.best.entry.title == 'The Subtle Knife'
-        assert not result.best.entry.is_omnibus
 
+def _dune_catalog():
+    return [
+        {"title": "Dune", "author": "Frank Herbert", "alt_titles": []},
+        {"title": "Dune Messiah", "author": "Frank Herbert", "alt_titles": []},
+    ]
 
-class TestCase4SameTitleDifferentAuthor:
-    """The Idiot: Dostoevsky 1869, Batuman 2017."""
 
-    def test_author_resolves_dostoevsky(self, catalog):
-        result = match('The Idiot', 'Fyodor Dostoevsky', catalog)
+def test_substring_trap_ranks_the_exact_title_first():
+    result = matcher.match_book("Dune", "Frank Herbert", _dune_catalog())
+    assert result.candidates[0].book["title"] == "Dune"
+    result = matcher.match_book("Dune Messiah", "Frank Herbert", _dune_catalog())
+    assert result.candidates[0].book["title"] == "Dune Messiah"
 
-        assert result.best.entry.author == 'Fyodor Dostoevsky'
-        assert result.should_auto_accept
 
-    def test_author_resolves_batuman(self, catalog):
-        result = match('The Idiot', 'Elif Batuman', catalog)
+def test_substring_trap_margin_is_too_small_to_auto_accept():
+    # "Dune" and "Dune Messiah" are fuzzy-similar enough (one contains the
+    # other) that the margin between them stays below the auto-accept
+    # threshold, even though the top pick is correct -- this is the "Dune
+    # vs. Dune Messiah (small margin -> review)" case from CONTEXT.md.
+    result = matcher.match_book("Dune", "Frank Herbert", _dune_catalog())
+    assert result.margin < AUTO_ACCEPT_MARGIN_THRESHOLD
+    assert result.status == matcher.STATUS_NEEDS_REVIEW
 
-        assert result.best.entry.author == 'Elif Batuman'
-        assert result.should_auto_accept
 
-    def test_surname_alone_is_enough_to_resolve(self, catalog):
-        """Spines frequently print only a surname."""
-        result = match('The Idiot', 'Batuman', catalog)
+def test_substring_trap_foundation_family_ranks_correctly():
+    catalog = [
+        {"title": "Foundation", "author": "Isaac Asimov", "alt_titles": []},
+        {"title": "Foundation and Empire", "author": "Isaac Asimov", "alt_titles": []},
+        {"title": "Second Foundation", "author": "Isaac Asimov", "alt_titles": []},
+    ]
+    result = matcher.match_book("Foundation and Empire", "Isaac Asimov", catalog)
+    assert result.candidates[0].book["title"] == "Foundation and Empire"
 
-        assert result.best.entry.author == 'Elif Batuman'
 
-    def test_without_an_author_it_refuses_to_choose(self, catalog):
-        result = match('The Idiot', '', catalog)
+# ---------- margin demotion on a shared-title pair (ambiguity #3) ----------
 
-        assert not result.should_auto_accept
-        assert result.margin == pytest.approx(0.0)
-        # Both are offered so the reader can pick.
-        assert {c.entry.author for c in result.candidates[:2]} == {
-            'Fyodor Dostoevsky',
-            'Elif Batuman',
-        }
 
+def _shared_title_catalog():
+    return [
+        {"title": "The Power", "author": "Naomi Alderman", "alt_titles": []},
+        {"title": "The Power", "author": "Rhonda Byrne", "alt_titles": []},
+    ]
 
-class TestCase5SameAuthorDifferentPeople:
-    """David Mitchell the novelist and David Mitchell the comedian."""
 
-    def test_title_selects_the_novel(self, catalog):
-        result = match('Cloud Atlas', 'David Mitchell', catalog)
+def test_shared_title_with_author_read_resolves_cleanly():
+    result = matcher.match_book("The Power", "Naomi Alderman", _shared_title_catalog())
+    assert result.status == matcher.STATUS_AUTO_ADDED
+    assert result.candidates[0].book["author"] == "Naomi Alderman"
+    assert result.margin >= AUTO_ACCEPT_MARGIN_THRESHOLD
 
-        assert result.best.entry.title == 'Cloud Atlas'
 
-    def test_title_selects_the_memoir(self, catalog):
-        result = match('Back Story', 'David Mitchell', catalog)
+def test_shared_title_without_author_demotes_to_review():
+    # Same title, author unreadable -> the two candidates are indistinguishable.
+    result = matcher.match_book("The Power", None, _shared_title_catalog())
+    assert result.status == matcher.STATUS_NEEDS_REVIEW
+    assert result.margin == pytest.approx(0.0)
 
-        assert result.best.entry.title == 'Back Story'
 
-    def test_author_alone_cannot_select_anything(self, catalog):
-        """An author with no title is not a match, however confident."""
-        result = match('', 'David Mitchell', catalog)
+def test_two_editions_tie_demotes_to_review():
+    # Ambiguity #1: identical title+author, two catalog rows -> tie, review.
+    catalog = [
+        {"title": "Fahrenheit 451", "author": "Ray Bradbury", "alt_titles": []},
+        {"title": "Fahrenheit 451", "author": "Ray Bradbury", "alt_titles": []},
+    ]
+    result = matcher.match_book("Fahrenheit 451", "Ray Bradbury", catalog)
+    assert result.status == matcher.STATUS_NEEDS_REVIEW
+    assert result.margin == pytest.approx(0.0)
+    assert result.confidence >= AUTO_ACCEPT_SCORE_THRESHOLD  # score alone would auto-accept
 
-        assert result.best is None
 
-    def test_shared_surname_is_separated_by_initials(self, catalog):
-        """Charlotte and Emily Bronte: same surname, same year, 1847."""
-        charlotte = match('Jane Eyre', 'C. Bronte', catalog)
-        emily = match('Wuthering Heights', 'E. Bronte', catalog)
+# ---------- below-threshold -> unmatched ----------
 
-        assert charlotte.best.entry.author == 'Charlotte Brontë'
-        assert emily.best.entry.author == 'Emily Brontë'
 
+def test_unrelated_title_is_unmatched():
+    catalog = [{"title": "Dune", "author": "Frank Herbert", "alt_titles": []}]
+    result = matcher.match_book("Completely Different Title Xyz", "Nobody Real", catalog)
+    assert result.status == matcher.STATUS_UNMATCHED
 
-class TestCase6SubtitleCollision:
-    """Sapiens: A Brief History of Humankind / A Graphic History, Volume 1."""
 
-    def test_full_title_resolves_cleanly(self, catalog):
-        result = match(
-            'Sapiens: A Brief History of Humankind', 'Yuval Noah Harari', catalog
-        )
+def test_empty_read_title_is_unmatched():
+    catalog = [{"title": "Dune", "author": "Frank Herbert", "alt_titles": []}]
+    result = matcher.match_book("", None, catalog)
+    assert result.status == matcher.STATUS_UNMATCHED
+    assert result.candidates == []
 
-        assert result.best.entry.title == 'Sapiens: A Brief History of Humankind'
-        assert result.should_auto_accept
 
-    def test_main_title_alone_surfaces_both_and_decides_neither(self, catalog):
-        """A crop that lost the subtitle -- the common case, it is set small."""
-        result = match('Sapiens', 'Yuval Noah Harari', catalog)
+# ---------- unreadable author caps confidence ----------
 
-        assert not result.should_auto_accept
-        assert result.margin == pytest.approx(0.0)
-        assert set(titles(result)) == {
-            'Sapiens: A Brief History of Humankind',
-            'Sapiens: A Graphic History, Volume 1',
-        }
 
-    def test_subtitles_are_not_stripped_during_normalization(self, catalog):
-        """If they were, the two rows would be one and this would be 1."""
-        result = match('Sapiens', 'Yuval Noah Harari', catalog)
-
-        assert len([c for c in result.candidates if 'Sapiens' in c.entry.title]) == 2
-
-
-class TestMarginIsTheGate:
-    """Why margin exists at all. Write these first; watch score alone fail."""
-
-    def test_a_high_score_over_a_tie_is_not_a_match(self, catalog):
-        """The whole argument in one test.
-
-        Score says yes. Margin says it is a coin flip. Auto-accept must side
-        with margin -- a scorer gated on score alone would add the wrong
-        edition here and never tell anyone.
-        """
-        result = match('Sapiens', 'Yuval Noah Harari', catalog)
-
-        assert result.score >= AUTO_ACCEPT_SCORE
-        assert result.margin < AUTO_ACCEPT_MARGIN
-        assert not result.should_auto_accept
-
-    def test_a_clear_winner_passes_both_gates(self, catalog):
-        result = match('Neuromancer', 'William Gibson', catalog)
-
-        assert result.score >= AUTO_ACCEPT_SCORE
-        assert result.margin >= AUTO_ACCEPT_MARGIN
-        assert result.should_auto_accept
-
-    def test_a_lone_candidate_has_nothing_competing_with_it(self, catalog):
-        """With no runner-up the margin is the score: nothing contested it."""
-        result = match('Braiding Sweetgrass', 'Robin Wall Kimmerer', catalog)
-
-        assert len(result.candidates) == 1
-        assert result.margin == result.score
-
-
-class TestAuthorlessReads:
-    def test_a_read_with_no_author_can_never_auto_accept(self, catalog):
-        """Structural, not incidental: the cap sits below the accept threshold."""
-        assert NO_AUTHOR_SCORE_CAP < AUTO_ACCEPT_SCORE
-
-        result = match('Neuromancer', '', catalog)
-
-        assert result.best.entry.title == 'Neuromancer'
-        assert result.score <= NO_AUTHOR_SCORE_CAP
-        assert not result.should_auto_accept
-
-    def test_an_author_that_disagrees_is_not_the_same_as_no_author(self, catalog):
-        missing = match('Neuromancer', '', catalog)
-        wrong = match('Neuromancer', 'Jane Austen', catalog)
-
-        assert missing.best.author_score is None
-        assert wrong.best.author_score == 0.0
-        assert wrong.score < missing.score
-
-
-class TestNormalizationReachesTheMatcher:
-    def test_accents_fold(self, catalog):
-        result = match(
-            'One Hundred Years of Solitude', 'Gabriel Garcia Marquez', catalog
-        )
-
-        assert result.should_auto_accept
-
-    def test_initials_collapse(self, catalog):
-        result = match('The Silmarillion', 'JRR Tolkien', catalog)
-
-        assert result.should_auto_accept
-
-    def test_leading_articles_are_optional(self, catalog):
-        with_article = match('The Dispossessed', 'Ursula K. Le Guin', catalog)
-        without = match('Dispossessed', 'Ursula K. Le Guin', catalog)
-
-        assert with_article.best.entry.title == 'The Dispossessed'
-        assert without.best.entry.title == 'The Dispossessed'
-
-
-class TestGarbageIn:
-    def test_an_unreadable_spine_matches_nothing(self, catalog):
-        assert match('xqzv wwbb', '', catalog).best is None
-
-    def test_an_empty_read_matches_nothing(self, catalog):
-        assert match('', '', catalog).best is None
-        assert match('   ', '', catalog).candidates == ()
+def test_unreadable_author_caps_confidence_and_blocks_auto_accept():
+    catalog = [{"title": "Dune", "author": "Frank Herbert", "alt_titles": []}]
+    result = matcher.match_book("Dune", None, catalog)
+    assert result.confidence == pytest.approx(UNREADABLE_AUTHOR_CONFIDENCE_CAP)
+    assert UNREADABLE_AUTHOR_CONFIDENCE_CAP < AUTO_ACCEPT_SCORE_THRESHOLD
+    assert result.status != matcher.STATUS_AUTO_ADDED

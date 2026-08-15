@@ -1,0 +1,56 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+#
+# Task runner for Shelfie. `mise tasks` lists these; `mise run <name>` runs one.
+#
+#   mise run backend    Django API on :8000
+#   mise run mobile     Expo (web + QR for Expo Go) on :8081
+#   mise run test       pytest suite (mocked VLM, no network, no cost)
+#   mise run pipeline   every pipeline node against a real photo (billed)
+#
+# Node is pinned; Python deliberately is not -- the backend runs out of
+# backend/venv, which is built against its own interpreter.
+
+[tools]
+node = "24"
+
+[env]
+_.file = "backend/.env"
+
+[tasks.backend]
+description = "Run the Django API on :8000"
+dir = "{{config_root}}/backend"
+run = """
+[ -x venv/bin/python ] || { echo "missing backend/venv -- python3 -m venv venv && venv/bin/pip install -r requirements.txt"; exit 1; }
+venv/bin/python manage.py migrate --noinput
+venv/bin/python manage.py runserver 0.0.0.0:8000
+"""
+
+[tasks.mobile]
+description = "Run the Expo app on :8081 -- QR for Expo Go, press w for web"
+dir = "{{config_root}}/mobile"
+run = """
+[ -d node_modules ] || npm install
+npm start
+"""
+
+[tasks.web]
+description = "Run the Expo app in the browser only"
+dir = "{{config_root}}/mobile"
+run = """
+[ -d node_modules ] || npm install
+npm run web
+"""
+
+# Extra CLI args pass straight through, e.g.
+#   mise run test -k matcher
+#   mise run pipeline --skip-vlm
+
+[tasks.test]
+description = "Run the backend test suite (VLM mocked -- no network, no cost)"
+dir = "{{config_root}}/backend"
+run = "venv/bin/python -m pytest -q"
+
+[tasks.pipeline]
+description = "Check each pipeline node (convert/detect/crop/read/match) on a real photo"
+dir = "{{config_root}}/backend"
+run = "venv/bin/python scripts/pipeline_check.py"

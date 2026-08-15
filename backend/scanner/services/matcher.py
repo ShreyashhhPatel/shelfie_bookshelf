@@ -1,301 +1,245 @@
-"""Resolve a spine read to a canonical catalog entry.
+"""
+Matches a VLM-read (title, author) pair against the catalog.
 
-This is the part of the product that is actually hard. Detection is a
-pretrained checkpoint and reading is an API call; deciding *which book* an
-imperfect read refers to, and knowing when not to decide, is the work.
-
-Two rules run through everything here:
-
-1. Never let one signal decide alone. A title can be shared by two books
-   (The Idiot) and an author can be shared by two people (David Mitchell).
-2. A high score is not a confident answer. What matters is whether the winner
-   beat the runner-up, which is why `margin` exists and why auto-accept
-   requires it.
-
-No network, no model, no database. `match()` takes plain values so every rule
-below is unit-testable in isolation -- see scanner/tests/test_matcher.py, which
-has one case per ambiguity documented in catalog/AMBIGUITIES.md.
+The differentiating idea: confidence is *separation*, not just similarity.
+We take the top candidate's blended score AND its margin over the
+second-best candidate. Auto-accept only when both are high; otherwise route
+to review. See scanner/constants.py for the thresholds and catalog/AMBIGUITIES.md
+for the specific cases this is designed to handle.
 """
 
+import re
+import unicodedata
 from dataclasses import dataclass, field
-from typing import Iterable, Sequence
 
 from rapidfuzz import fuzz
 
-from ..constants import (
+from scanner.constants import (
     AUTHOR_WEIGHT,
-    AUTO_ACCEPT_MARGIN,
-    AUTO_ACCEPT_SCORE,
-    INITIALS_WEIGHT,
-    MAIN_TITLE_MATCH_PENALTY,
-    MAX_CANDIDATES,
-    MIN_CANDIDATE_SCORE,
-    NO_AUTHOR_SCORE_CAP,
-    SURNAME_MISMATCH_THRESHOLD,
-    SURNAME_WEIGHT,
+    AUTO_ACCEPT_MARGIN_THRESHOLD,
+    AUTO_ACCEPT_SCORE_THRESHOLD,
+    COLOR_TIEBREAK_MAX_MARGIN,
+    LEADING_ARTICLES,
+    REVIEW_CANDIDATE_COUNT,
+    REVIEW_MIN_SCORE_THRESHOLD,
+    SURNAME_FUZZY_MATCH_THRESHOLD,
     TITLE_WEIGHT,
-    author_surname,
-    main_title,
-    normalize_author,
-    normalize_title,
+    UNREADABLE_AUTHOR_CONFIDENCE_CAP,
 )
 
+_APOSTROPHE_RE = re.compile(r"[‘’'`]")
+_PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
+_WS_RE = re.compile(r"\s+")
+_GLUED_INITIAL_RE = re.compile(r"\.(?=\S)")
+
+STATUS_AUTO_ADDED = "auto_added"
+STATUS_NEEDS_REVIEW = "needs_review"
+STATUS_UNMATCHED = "unmatched"
+
+
+def strip_accents(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
+def normalize_text(text: str | None) -> str:
+    """Lowercase, strip accents/punctuation, drop a leading article."""
+    if not text:
+        return ""
+    text = strip_accents(text).lower()
+    text = _APOSTROPHE_RE.sub("", text)
+    text = _PUNCT_RE.sub(" ", text)
+    text = _WS_RE.sub(" ", text).strip()
+    if not text:
+        return text
+    words = text.split(" ")
+    if words[0] in LEADING_ARTICLES and len(words) > 1:
+        words = words[1:]
+    return " ".join(words)
+
 
 @dataclass(frozen=True)
-class CatalogEntry:
-    """A catalog row, detached from Django.
+class AuthorName:
+    raw: str
+    surname: str
+    initials: tuple[str, ...] = field(default_factory=tuple)
 
-    `contained_titles` is deliberately absent. An omnibus must not be matchable
-    by the names of the books inside it -- AMBIGUITIES.md case 3 -- and the
-    surest way to guarantee that is to give the matcher no way to see them.
+
+def normalize_author(raw: str | None) -> AuthorName | None:
     """
+    Parses "Firstname Lastname", "Lastname, Firstname", and glued-initial
+    forms ("J.K. Rowling") into a comparable (surname, initials) shape.
+    Accents are stripped first so e.g. "Garcia" and "García" normalize the
+    same way.
+    """
+    if not raw or not raw.strip():
+        return None
+    text = strip_accents(raw).strip()
+    text = _GLUED_INITIAL_RE.sub(". ", text)
+    text = _WS_RE.sub(" ", text).strip()
 
-    id: int | None
-    title: str
-    author: str
-    alt_titles: tuple[str, ...] = ()
-    is_omnibus: bool = False
+    if "," in text:
+        surname_part, given_part = (p.strip() for p in text.split(",", 1))
+        surname_tokens = _PUNCT_RE.sub(" ", surname_part).lower().split()
+        given_tokens = _PUNCT_RE.sub(" ", given_part).lower().split()
+    else:
+        tokens = _PUNCT_RE.sub(" ", text).lower().split()
+        if not tokens:
+            return None
+        surname_tokens = tokens[-1:]
+        given_tokens = tokens[:-1]
 
-    @property
-    def all_titles(self) -> tuple[str, ...]:
-        return (self.title, *self.alt_titles)
-
-    @classmethod
-    def from_model(cls, book) -> 'CatalogEntry':
-        return cls(
-            id=book.pk,
-            title=book.title,
-            author=book.author,
-            alt_titles=tuple(book.alt_titles or ()),
-            is_omnibus=book.is_omnibus,
-        )
+    surname = " ".join(surname_tokens)
+    if not surname:
+        return None
+    initials = tuple(tok[0] for tok in given_tokens if tok)
+    return AuthorName(raw=raw, surname=surname, initials=initials)
 
 
-@dataclass(frozen=True)
+def title_score(read_title: str | None, catalog_title: str, alt_titles: list[str] | None = None) -> float:
+    """Fuzzy match against the canonical title AND every alternate title; best wins."""
+    read_norm = normalize_text(read_title)
+    if not read_norm:
+        return 0.0
+    candidates = [catalog_title, *(alt_titles or [])]
+    best = 0.0
+    for candidate in candidates:
+        candidate_norm = normalize_text(candidate)
+        if not candidate_norm:
+            continue
+        score = fuzz.WRatio(read_norm, candidate_norm) / 100.0
+        best = max(best, score)
+    return best
+
+
+def author_score(read_author: str | None, catalog_author: str | None) -> float | None:
+    """
+    Structured, not fuzzy: compare surnames first, then check initial
+    compatibility. Returns None (unknown) when either side couldn't be
+    parsed into a name, letting the caller decide how to blend that.
+    """
+    read = normalize_author(read_author)
+    catalog = normalize_author(catalog_author)
+    if read is None or catalog is None:
+        return None
+
+    if read.surname == catalog.surname:
+        surname_component = 1.0
+    else:
+        surname_component = fuzz.ratio(read.surname, catalog.surname) / 100.0
+        if surname_component < SURNAME_FUZZY_MATCH_THRESHOLD:
+            return 0.0
+
+    if not read.initials or not catalog.initials:
+        return surname_component
+
+    overlap = min(len(read.initials), len(catalog.initials))
+    compatible = all(read.initials[i] == catalog.initials[i] for i in range(overlap))
+    return surname_component if compatible else surname_component * 0.5
+
+
+def blend(title_score_value: float, author_score_value: float | None) -> float:
+    if author_score_value is None:
+        return min(title_score_value, UNREADABLE_AUTHOR_CONFIDENCE_CAP)
+    return TITLE_WEIGHT * title_score_value + AUTHOR_WEIGHT * author_score_value
+
+
+@dataclass
 class Candidate:
-    """One scored possibility for a spine."""
-
-    entry: CatalogEntry
+    book: dict
     score: float
     title_score: float
-    #: None when the read carried no author at all, which is not the same as an
-    #: author that was read and disagreed (0.0).
     author_score: float | None
-    #: Which of the entry's titles actually matched. The review screen shows
-    #: this so a reader holding "The Golden Compass" is not told "Northern
-    #: Lights" with no explanation.
-    matched_title: str
-
-    def as_dict(self) -> dict:
-        """Shape stored in `Detection.candidates`."""
-        return {
-            'catalog_book_id': self.entry.id,
-            'title': self.entry.title,
-            'author': self.entry.author,
-            'matched_title': self.matched_title,
-            'score': round(self.score, 4),
-            'title_score': round(self.title_score, 4),
-            'author_score': (
-                None if self.author_score is None else round(self.author_score, 4)
-            ),
-        }
 
 
-@dataclass(frozen=True)
+@dataclass
 class MatchResult:
-    candidates: tuple[Candidate, ...] = ()
-    #: Gap between the best and second-best score. When only one candidate
-    #: survives, nothing competed, so the margin is the score itself.
-    margin: float = 0.0
-
-    @property
-    def best(self) -> Candidate | None:
-        return self.candidates[0] if self.candidates else None
-
-    @property
-    def score(self) -> float:
-        return self.candidates[0].score if self.candidates else 0.0
-
-    @property
-    def should_auto_accept(self) -> bool:
-        """Both gates, deliberately.
-
-        Score says the winner looks right. Margin says nothing else looks just
-        as right. Dropping either one is how a shelf of Dune sequels turns into
-        five copies of Dune.
-        """
-        return self.score >= AUTO_ACCEPT_SCORE and self.margin >= AUTO_ACCEPT_MARGIN
-
-    def as_dicts(self) -> list[dict]:
-        return [candidate.as_dict() for candidate in self.candidates]
+    status: str
+    confidence: float | None
+    margin: float | None
+    candidates: list[Candidate]
 
 
-def _ratio(left: str, right: str) -> float:
-    """Symmetric similarity in 0..1.
-
-    `token_sort_ratio` rather than `partial_ratio` or `WRatio`, and the choice
-    is load-bearing. Partial matching scores a substring as perfect, so "Dune"
-    would score 1.0 against "Dune Messiah", "Children of Dune", and three more
-    -- exactly the collision this matcher exists to resolve. Token sort stays
-    symmetric: unmatched words on the catalog side cost as much as unmatched
-    words on the read side.
-    """
-    if not left or not right:
-        return 0.0
-    return fuzz.token_sort_ratio(left, right) / 100.0
-
-
-def score_title(read_title: str, entry: CatalogEntry) -> tuple[float, str]:
-    """Best score across the entry's canonical and alternate titles.
-
-    An alternate-title hit is full strength -- the US edition genuinely does
-    print "The Golden Compass" on the spine, and there is nothing second-rate
-    about matching it.
-    """
-    read_norm = normalize_title(read_title)
-    if not read_norm:
-        return 0.0, entry.title
-
-    best_score = 0.0
-    best_title = entry.title
-
-    for candidate_title in entry.all_titles:
-        candidate_norm = normalize_title(candidate_title)
-
-        if candidate_norm == read_norm:
-            return 1.0, candidate_title
-
-        score = _ratio(read_norm, candidate_norm)
-
-        # Fallback for a spine that printed only the main title. Discounted,
-        # because collapsing "Sapiens: A Brief History of Humankind" to
-        # "Sapiens" is exactly what makes it collide with the graphic edition.
-        main_norm = normalize_title(main_title(candidate_title))
-        if main_norm != candidate_norm:
-            main_score = _ratio(read_norm, main_norm) * MAIN_TITLE_MATCH_PENALTY
-            score = max(score, main_score)
-
-        if score > best_score:
-            best_score, best_title = score, candidate_title
-
-    return best_score, best_title
-
-
-def _initials(normalized_author: str) -> str:
-    """First letters of everything before the surname.
-
-    Runs of initials are already glued together by `normalize_author`, so
-    "J.R.R. Tolkien" arrives as "jrr tolkien" and yields "j" -- the same as
-    "John Tolkien" would. Initials are weak evidence and are treated as such.
-    """
-    tokens = normalized_author.split()
-    return ''.join(token[0] for token in tokens[:-1])
-
-
-def score_author(read_author: str, catalog_author: str) -> float | None:
-    """Structured comparison on surname and initials.
-
-    Returns None when nothing was read -- distinct from 0.0, which means an
-    author *was* read and disagreed. The caller treats those very differently.
-
-    Not a plain fuzzy ratio, because the failure modes are structural rather
-    than typographic: spines routinely print the surname alone, and two authors
-    who share a surname differ only in their initials.
-    """
-    if not read_author or not read_author.strip():
-        return None
-
-    read_norm = normalize_author(read_author)
-    catalog_norm = normalize_author(catalog_author)
-    if not read_norm or not catalog_norm:
-        return None
-
-    surname = _ratio(author_surname(read_norm), author_surname(catalog_norm))
-
-    # Two unrelated surnames still share letters, and counting that as partial
-    # credit makes a confidently wrong author better evidence than no author.
-    # Below the floor they are simply different people.
-    if surname < SURNAME_MISMATCH_THRESHOLD:
-        return 0.0
-
-    read_initials = _initials(read_norm)
-    catalog_initials = _initials(catalog_norm)
-
-    # A surname-only read ("TOLKIEN" is all the spine prints) must not be
-    # punished for initials it never claimed to have. Only compare them when
-    # both sides actually offer some.
-    if not read_initials or not catalog_initials:
-        return surname
-
-    initials = 1.0 if read_initials == catalog_initials else _ratio(
-        read_initials, catalog_initials
-    )
-    return SURNAME_WEIGHT * surname + INITIALS_WEIGHT * initials
-
-
-def combine(title_score: float, author_score: float | None) -> float:
-    """Blend the two signals into one score.
-
-    With no author, the score is capped rather than reweighted. The cap sits
-    below AUTO_ACCEPT_SCORE on purpose, which makes a structural guarantee out
-    of it: **a read with no author can never be auto-accepted.** "The Idiot"
-    with no author is a perfect title match to two different books, and the
-    only honest response is to ask.
-    """
-    if author_score is None:
-        return min(title_score, NO_AUTHOR_SCORE_CAP)
-    return TITLE_WEIGHT * title_score + AUTHOR_WEIGHT * author_score
-
-
-def match(
-    read_title: str,
-    read_author: str,
-    entries: Sequence[CatalogEntry],
-    limit: int = MAX_CANDIDATES,
+def match_book(
+    read_title: str | None,
+    read_author: str | None,
+    catalog: list[dict],
+    top_n: int = REVIEW_CANDIDATE_COUNT,
 ) -> MatchResult:
-    """Score a spine read against the catalog and rank what it could be."""
+    """
+    Scores `read_title`/`read_author` against every catalog row and buckets
+    the result. `catalog` rows are plain dicts with at least `title` and
+    `author`, and optionally `alt_titles` (list[str]).
+    """
     if not read_title or not read_title.strip():
-        return MatchResult()
+        return MatchResult(status=STATUS_UNMATCHED, confidence=None, margin=None, candidates=[])
 
     scored: list[Candidate] = []
-    for entry in entries:
-        title_score, matched_title = score_title(read_title, entry)
-        if title_score <= 0.0:
-            continue
-        author_score = score_author(read_author, entry.author)
-        score = combine(title_score, author_score)
-        if score < MIN_CANDIDATE_SCORE:
-            continue
+    for book in catalog:
+        t_score = title_score(read_title, book["title"], book.get("alt_titles"))
+        a_score = author_score(read_author, book.get("author"))
         scored.append(
             Candidate(
-                entry=entry,
-                score=score,
-                title_score=title_score,
-                author_score=author_score,
-                matched_title=matched_title,
+                book=book,
+                score=blend(t_score, a_score),
+                title_score=t_score,
+                author_score=a_score,
             )
         )
+    scored.sort(key=lambda c: c.score, reverse=True)
+    top = scored[:top_n]
 
-    if not scored:
-        return MatchResult()
+    if not top or top[0].score < REVIEW_MIN_SCORE_THRESHOLD:
+        return MatchResult(
+            status=STATUS_UNMATCHED,
+            confidence=top[0].score if top else None,
+            margin=None,
+            candidates=top,
+        )
 
-    # Title score breaks ties in the blended score, so a genuine exact title
-    # hit outranks a fuzzy title propped up by a confident author.
-    scored.sort(key=lambda c: (c.score, c.title_score), reverse=True)
-    top = tuple(scored[:limit])
+    confidence = top[0].score
+    margin = confidence - (top[1].score if len(top) > 1 else 0.0)
 
-    margin = top[0].score - top[1].score if len(top) > 1 else top[0].score
+    if confidence >= AUTO_ACCEPT_SCORE_THRESHOLD and margin >= AUTO_ACCEPT_MARGIN_THRESHOLD:
+        status = STATUS_AUTO_ADDED
+    else:
+        status = STATUS_NEEDS_REVIEW
 
-    return MatchResult(candidates=top, margin=margin)
+    return MatchResult(status=status, confidence=confidence, margin=margin, candidates=top)
 
 
-def catalog_entries() -> list[CatalogEntry]:
-    """Load the whole catalog as plain entries.
-
-    Imported lazily so that importing this module never drags in Django. The
-    catalog is small and read-mostly; when it stops being either, this is the
-    single place that has to learn about caching.
+def apply_color_tiebreak(result: MatchResult, read_color: str | None) -> MatchResult:
     """
-    from ..models import CatalogBook
+    Re-orders candidates that the text scores left in a near-tie, putting the
+    one whose spine colour matches the photo first.
 
-    return [CatalogEntry.from_model(book) for book in CatalogBook.objects.all()]
+    Deliberately presentation-only: status, confidence and margin are all left
+    exactly as the text evidence set them. Colour is a weak signal read off a
+    crop under unknown lighting, and letting it promote anything to
+    auto-accept would put wrong books in the library with no human step. What
+    it does earn is the top slot on a review card -- which is the whole
+    difference between "pick one of these two identical titles" and "yes,
+    that one".
+    """
+    if not read_color or result.margin is None or result.margin > COLOR_TIEBREAK_MAX_MARGIN:
+        return result
+
+    leader = result.candidates[0].score
+    tied = [c for c in result.candidates if leader - c.score <= COLOR_TIEBREAK_MAX_MARGIN]
+    if len(tied) < 2:
+        return result
+
+    matches = [c for c in tied if c.book.get("spine_color") and c.book["spine_color"] == read_color]
+    # Exactly one colour match is a decision. Zero means the catalog has no
+    # colour for these; more than one means colour didn't separate them either.
+    if len(matches) != 1:
+        return result
+
+    winner = matches[0]
+    reordered = [winner] + [c for c in result.candidates if c is not winner]
+    return MatchResult(
+        status=result.status,
+        confidence=result.confidence,
+        margin=result.margin,
+        candidates=reordered,
+    )

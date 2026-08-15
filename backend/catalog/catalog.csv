@@ -1,110 +1,115 @@
-title,author,year,alt_titles,is_omnibus,contained_titles
-Dune,Frank Herbert,1965,,false,
-Dune Messiah,Frank Herbert,1969,,false,
-Children of Dune,Frank Herbert,1976,,false,
-God Emperor of Dune,Frank Herbert,1981,,false,
-Heretics of Dune,Frank Herbert,1984,,false,
-The Lord of the Rings,J.R.R. Tolkien,1968,,true,The Fellowship of the Ring|The Two Towers|The Return of the King
-The Fellowship of the Ring,J.R.R. Tolkien,1954,,false,
-The Two Towers,J.R.R. Tolkien,1954,,false,
-The Return of the King,J.R.R. Tolkien,1955,,false,
-The Hobbit,J.R.R. Tolkien,1937,There and Back Again,false,
-The Silmarillion,J.R.R. Tolkien,1977,,false,
-Northern Lights,Philip Pullman,1995,The Golden Compass,false,
-The Subtle Knife,Philip Pullman,1997,,false,
-The Amber Spyglass,Philip Pullman,2000,,false,
-His Dark Materials,Philip Pullman,2011,,true,Northern Lights|The Subtle Knife|The Amber Spyglass
-The Idiot,Fyodor Dostoevsky,1869,,false,
-The Idiot,Elif Batuman,2017,,false,
-Crime and Punishment,Fyodor Dostoevsky,1866,,false,
-The Brothers Karamazov,Fyodor Dostoevsky,1880,,false,
-Notes from Underground,Fyodor Dostoevsky,1864,,false,
-Cloud Atlas,David Mitchell,2004,,false,
-Back Story,David Mitchell,2012,,false,
-The Bone Clocks,David Mitchell,2014,,false,
-number9dream,David Mitchell,2001,,false,
-Sapiens: A Brief History of Humankind,Yuval Noah Harari,2011,,false,
-"Sapiens: A Graphic History, Volume 1",Yuval Noah Harari,2020,,false,
-Homo Deus: A Brief History of Tomorrow,Yuval Noah Harari,2015,,false,
-The Left Hand of Darkness,Ursula K. Le Guin,1969,,false,
-The Dispossessed,Ursula K. Le Guin,1974,,false,
-A Wizard of Earthsea,Ursula K. Le Guin,1968,,false,
-The Tombs of Atuan,Ursula K. Le Guin,1971,,false,
-The Farthest Shore,Ursula K. Le Guin,1972,,false,
-Tehanu,Ursula K. Le Guin,1990,,false,
-The Earthsea Quartet,Ursula K. Le Guin,1993,,true,A Wizard of Earthsea|The Tombs of Atuan|The Farthest Shore|Tehanu
-Foundation,Isaac Asimov,1951,,false,
-Foundation and Empire,Isaac Asimov,1952,,false,
-Second Foundation,Isaac Asimov,1953,,false,
-"I, Robot",Isaac Asimov,1950,,false,
-Neuromancer,William Gibson,1984,,false,
-Count Zero,William Gibson,1986,,false,
-Pattern Recognition,William Gibson,2003,,false,
-Snow Crash,Neal Stephenson,1992,,false,
-Cryptonomicon,Neal Stephenson,1999,,false,
-Anathem,Neal Stephenson,2008,,false,
-The Three-Body Problem,Liu Cixin,2008,,false,
-The Dark Forest,Liu Cixin,2008,,false,
-Death's End,Liu Cixin,2010,,false,
-Kindred,Octavia E. Butler,1979,,false,
-Parable of the Sower,Octavia E. Butler,1993,,false,
-Parable of the Talents,Octavia E. Butler,1998,,false,
-Bloodchild and Other Stories,Octavia E. Butler,1995,,false,
-The Handmaid's Tale,Margaret Atwood,1985,,false,
-The Testaments,Margaret Atwood,2019,,false,
-Oryx and Crake,Margaret Atwood,2003,,false,
-Beloved,Toni Morrison,1987,,false,
-Song of Solomon,Toni Morrison,1977,,false,
-The Bluest Eye,Toni Morrison,1970,,false,
-Things Fall Apart,Chinua Achebe,1958,,false,
-Half of a Yellow Sun,Chimamanda Ngozi Adichie,2006,,false,
-Americanah,Chimamanda Ngozi Adichie,2013,,false,
-Purple Hibiscus,Chimamanda Ngozi Adichie,2003,,false,
-One Hundred Years of Solitude,Gabriel García Márquez,1967,,false,
-Love in the Time of Cholera,Gabriel García Márquez,1985,,false,
-Chronicle of a Death Foretold,Gabriel García Márquez,1981,,false,
-Norwegian Wood,Haruki Murakami,1987,,false,
-Kafka on the Shore,Haruki Murakami,2002,,false,
-The Wind-Up Bird Chronicle,Haruki Murakami,1994,,false,
-1Q84,Haruki Murakami,2009,,false,
-Never Let Me Go,Kazuo Ishiguro,2005,,false,
-The Remains of the Day,Kazuo Ishiguro,1989,,false,
-Klara and the Sun,Kazuo Ishiguro,2021,,false,
-Pride and Prejudice,Jane Austen,1813,,false,
-Persuasion,Jane Austen,1817,,false,
-Emma,Jane Austen,1815,,false,
-Sense and Sensibility,Jane Austen,1811,,false,
-Jane Eyre,Charlotte Brontë,1847,,false,
-Wuthering Heights,Emily Brontë,1847,,false,
-Mrs Dalloway,Virginia Woolf,1925,,false,
-To the Lighthouse,Virginia Woolf,1927,,false,
-Orlando,Virginia Woolf,1928,,false,
-1984,George Orwell,1949,Nineteen Eighty-Four,false,
-Animal Farm,George Orwell,1945,,false,
-Homage to Catalonia,George Orwell,1938,,false,
-Brave New World,Aldous Huxley,1932,,false,
-Fahrenheit 451,Ray Bradbury,1953,,false,
-The Martian Chronicles,Ray Bradbury,1950,,false,
-Slaughterhouse-Five,Kurt Vonnegut,1969,The Children's Crusade,false,
-Cat's Cradle,Kurt Vonnegut,1963,,false,
-Breakfast of Champions,Kurt Vonnegut,1973,,false,
-The Road,Cormac McCarthy,2006,,false,
-Blood Meridian,Cormac McCarthy,1985,,false,
-No Country for Old Men,Cormac McCarthy,2005,,false,
-"Thinking, Fast and Slow",Daniel Kahneman,2011,,false,
-The Selfish Gene,Richard Dawkins,1976,,false,
-A Brief History of Time,Stephen Hawking,1988,,false,
-Cosmos,Carl Sagan,1980,,false,
-The Structure of Scientific Revolutions,Thomas S. Kuhn,1962,,false,
-"Gödel, Escher, Bach: An Eternal Golden Braid",Douglas R. Hofstadter,1979,GEB,false,
-The Emperor of All Maladies: A Biography of Cancer,Siddhartha Mukherjee,2010,,false,
-The Gene: An Intimate History,Siddhartha Mukherjee,2016,,false,
-"Guns, Germs, and Steel",Jared Diamond,1997,,false,
-The Design of Everyday Things,Don Norman,1988,The Psychology of Everyday Things,false,
-Educated,Tara Westover,2018,,false,
-Just Mercy,Bryan Stevenson,2014,,false,
-The Warmth of Other Suns,Isabel Wilkerson,2010,,false,
-Caste: The Origins of Our Discontents,Isabel Wilkerson,2020,,false,
-Between the World and Me,Ta-Nehisi Coates,2015,,false,
-The Immortal Life of Henrietta Lacks,Rebecca Skloot,2010,,false,
-Braiding Sweetgrass,Robin Wall Kimmerer,2013,,false,
+"title","author","alt_titles","year","series","is_omnibus","contained_titles","spine_color","spine_hex"
+"Designing Data-Intensive Applications","Martin Kleppmann","","2017","","false","","",""
+"Clean Code: A Handbook of Agile Software Craftsmanship","Robert C. Martin","Clean Code","2008","","false","","",""
+"The Pragmatic Programmer","David Thomas and Andrew Hunt","The Pragmatic Programmer: Your Journey to Mastery","1999","","false","","",""
+"Hands-On Machine Learning with Scikit-Learn, Keras, and TensorFlow","Aurelien Geron","Hands-On Machine Learning","2019","","false","","",""
+"Deep Learning","Ian Goodfellow and Yoshua Bengio and Aaron Courville","","2016","","false","","",""
+"Artificial Intelligence: A Modern Approach","Stuart Russell and Peter Norvig","AIMA","2020","","false","","",""
+"The Mythical Man-Month","Frederick P. Brooks Jr.","The Mythical Man-Month: Essays on Software Engineering","1975","","false","","",""
+"Refactoring: Improving the Design of Existing Code","Martin Fowler","Refactoring","2018","","false","","",""
+"Design Patterns: Elements of Reusable Object-Oriented Software","Erich Gamma and Richard Helm and Ralph Johnson and John Vlissides","Gang of Four Book","1994","","false","","",""
+"Structure and Interpretation of Computer Programs","Harold Abelson and Gerald Jay Sussman","SICP","1985","","false","","",""
+"Introduction to Algorithms","Cormen and Leiserson and Rivest and Stein","CLRS","2009","","false","","",""
+"Cracking the Coding Interview","Gayle Laakmann McDowell","","2015","","false","","",""
+"The Phoenix Project","Gene Kim and Kevin Behr and George Spafford","","2013","The Phoenix Project Trilogy","false","","",""
+"Site Reliability Engineering","Betsy Beyer and Chris Jones and Jennifer Petoff and Niall Richard Murphy","SRE Book","2016","","false","","",""
+"Building Microservices","Sam Newman","","2015","","false","","",""
+"Database Internals","Alex Petrov","","2019","","false","","",""
+"Grokking Algorithms","Aditya Bhargava","","2016","","false","","",""
+"Fluent Python","Luciano Ramalho","","2015","","false","","",""
+"Effective Java","Joshua Bloch","","2017","","false","","",""
+"Clean Architecture: A Craftsman's Guide to Software Structure and Design","Robert C. Martin","Clean Architecture","2017","","false","","",""
+"The Clean Coder","Robert C. Martin","","2011","","false","","",""
+"Working Effectively with Legacy Code","Michael Feathers","","2004","","false","","",""
+"Domain-Driven Design","Eric Evans","Domain-Driven Design: Tackling Complexity in the Heart of Software","2003","","false","","",""
+"Continuous Delivery","Jez Humble and David Farley","","2010","","false","","",""
+"Accelerate","Nicole Forsgren and Jez Humble and Gene Kim","","2018","","false","","",""
+"Peopleware: Productive Projects and Teams","Tom DeMarco and Timothy Lister","Peopleware","1987","","false","","",""
+"The Design of Everyday Things","Don Norman","","1988","","false","","",""
+"Thinking, Fast and Slow","Daniel Kahneman","","2011","","false","","",""
+"Superintelligence: Paths, Dangers, Strategies","Nick Bostrom","Superintelligence","2014","","false","","",""
+"Life 3.0: Being Human in the Age of Artificial Intelligence","Max Tegmark","Life 3.0","2017","","false","","",""
+"The Alignment Problem","Brian Christian","","2020","","false","","",""
+"Weapons of Math Destruction","Cathy O'Neil","","2016","","false","","",""
+"Dune","Frank Herbert","","1965","Dune Chronicles","false","","",""
+"Dune Messiah","Frank Herbert","","1969","Dune Chronicles","false","","",""
+"Children of Dune","Frank Herbert","","1976","Dune Chronicles","false","","",""
+"Foundation","Isaac Asimov","","1951","Foundation","false","","",""
+"Foundation and Empire","Isaac Asimov","","1952","Foundation","false","","",""
+"Second Foundation","Isaac Asimov","","1953","Foundation","false","","",""
+"I, Robot","Isaac Asimov","","1950","","false","","",""
+"Neuromancer","William Gibson","","1984","Sprawl Trilogy","false","","",""
+"Snow Crash","Neal Stephenson","","1992","","false","","",""
+"The Three-Body Problem","Liu Cixin","","2008","Remembrance of Earth's Past","false","","",""
+"Ender's Game","Orson Scott Card","","1985","Ender's Saga","false","","",""
+"The Martian","Andy Weir","","2011","","false","","",""
+"Project Hail Mary","Andy Weir","","2021","","false","","",""
+"Fahrenheit 451","Ray Bradbury","","1953","","false","","",""
+"Fahrenheit 451","Ray Bradbury","","2013","","false","","",""
+"Brave New World","Aldous Huxley","","1932","","false","","",""
+"1984","George Orwell","Nineteen Eighty-Four","1949","","false","","",""
+"Animal Farm","Orwell, George","","1945","","false","","",""
+"The Left Hand of Darkness","Ursula K. Le Guin","","1969","Hainish Cycle","false","","",""
+"Northern Lights","Philip Pullman","The Golden Compass","1995","His Dark Materials","false","","",""
+"Harry Potter and the Philosopher's Stone","J.K. Rowling","Harry Potter and the Sorcerer's Stone","1997","Harry Potter","false","","",""
+"The Casual Vacancy","J. K. Rowling","","2012","","false","","",""
+"The Lord of the Rings","J.R.R. Tolkien","","1955","Middle-earth","true","The Fellowship of the Ring|The Two Towers|The Return of the King","",""
+"The Fellowship of the Ring","J.R.R. Tolkien","","1954","Middle-earth","false","","",""
+"The Two Towers","J.R.R. Tolkien","","1954","Middle-earth","false","","",""
+"The Return of the King","J.R.R. Tolkien","","1955","Middle-earth","false","","",""
+"The Hobbit","J.R.R. Tolkien","The Hobbit, or There and Back Again","1937","Middle-earth","false","","",""
+"The Hitchhiker's Guide to the Galaxy","Douglas Adams","","1979","Hitchhiker's Guide","false","","",""
+"The Restaurant at the End of the Universe","Douglas Adams","","1980","Hitchhiker's Guide","false","","",""
+"Life, the Universe and Everything","Douglas Adams","","1982","Hitchhiker's Guide","false","","",""
+"The Ultimate Hitchhiker's Guide to the Galaxy","Douglas Adams","The Hitchhiker's Guide to the Galaxy: The Complete Trilogy in Five Parts","2002","Hitchhiker's Guide","true","The Hitchhiker's Guide to the Galaxy|The Restaurant at the End of the Universe|Life, the Universe and Everything|So Long and Thanks for All the Fish|Mostly Harmless","",""
+"One Hundred Years of Solitude","Gabriel García Márquez","Cien años de soledad","1967","","false","","",""
+"Love in the Time of Cholera","Gabriel Garcia Marquez","","1985","","false","","",""
+"The Power","Naomi Alderman","","2016","","false","","",""
+"The Power","Rhonda Byrne","","2010","The Secret","false","","",""
+"The Secret","Rhonda Byrne","","2006","The Secret","false","","",""
+"The Secret","Julie Garwood","","1992","","false","","",""
+"Gone Girl","Gillian Flynn","","2012","","false","","",""
+"The Girl with the Dragon Tattoo","Stieg Larsson","Man som hatar kvinnor","2005","Millennium","false","","",""
+"Where the Crawdads Sing","Delia Owens","","2018","","false","","",""
+"Atomic Habits","James Clear","","2018","","false","","",""
+"Sapiens: A Brief History of Humankind","Yuval Noah Harari","Sapiens","2011","","false","","",""
+"Educated","Tara Westover","Educated: A Memoir","2018","","false","","",""
+"Becoming","Michelle Obama","","2018","","false","","",""
+"The Alchemist","Paulo Coelho","O Alquimista","1988","","false","","",""
+"The Da Vinci Code","Dan Brown","","2003","Robert Langdon","false","","",""
+"Angels & Demons","Dan Brown","","2000","Robert Langdon","false","","",""
+"The Hunger Games","Suzanne Collins","","2008","The Hunger Games","false","","",""
+"Catching Fire","Suzanne Collins","","2009","The Hunger Games","false","","",""
+"Mockingjay","Suzanne Collins","","2010","The Hunger Games","false","","",""
+"The Girl on the Train","Paula Hawkins","","2015","","false","","",""
+"Big Little Lies","Liane Moriarty","","2014","","false","","",""
+"The Silent Patient","Alex Michaelides","","2019","","false","","",""
+"Circe","Madeline Miller","","2018","","false","","",""
+"The Song of Achilles","Madeline Miller","","2011","","false","","",""
+"Normal People","Sally Rooney","","2018","","false","","",""
+"A Little Life","Hanya Yanagihara","","2015","","false","","",""
+"The Kite Runner","Khaled Hosseini","","2003","","false","","",""
+"Life of Pi","Yann Martel","","2001","","false","","",""
+"The Road","Cormac McCarthy","","2006","","false","","",""
+"No Country for Old Men","Cormac McCarthy","","2005","","false","","",""
+"American Gods","Neil Gaiman","","2001","","false","","",""
+"Good Omens","Neil Gaiman and Terry Pratchett","","1990","","false","","",""
+"The Name of the Wind","Patrick Rothfuss","","2007","The Kingkiller Chronicle","false","","",""
+"Mistborn: The Final Empire","Brandon Sanderson","Mistborn","2006","Mistborn","false","","",""
+"The Way of Kings","Brandon Sanderson","","2010","The Stormlight Archive","false","","",""
+"A Game of Thrones","George R. R. Martin","","1996","A Song of Ice and Fire","false","","",""
+"A Clash of Kings","George R. R. Martin","","1998","A Song of Ice and Fire","false","","",""
+"The Handmaid's Tale","Margaret Atwood","","1985","MaddAddam","false","","",""
+"Slaughterhouse-Five","Kurt Vonnegut","","1969","","false","","",""
+"Cat's Cradle","Kurt Vonnegut","","1963","","false","","",""
+"The Catcher in the Rye","J.D. Salinger","","1951","","false","","",""
+"To Kill a Mockingbird","Harper Lee","","1960","","false","","",""
+"Pride and Prejudice","Jane Austen","","1813","","false","","",""
+"The Great Gatsby","F. Scott Fitzgerald","","1925","","false","","",""
+"Crime and Punishment","Fyodor Dostoevsky","Prestuplenie i nakazanie","1866","","false","","",""
+"War and Peace","Leo Tolstoy","Voyna i mir","1869","","false","","",""
+"The Art of War","Sun Tzu","","","","false","","red","#8C1A17"
+"The 48 Laws of Power","Robert Greene","","1998","","false","","red","#B03A20"
+"This Is Going to Hurt","Adam Kay","This Is Going to Hurt: Secret Diaries of a Junior Doctor","2017","","false","","yellow","#FCE153"
+"And Then There Were None","Agatha Christie","Ten Little Indians","1939","","false","","black","#1C1A1B"
+"The Thirteen Problems","Agatha Christie","The Tuesday Club Murders","1932","Miss Marple","false","","purple","#C59EC9"

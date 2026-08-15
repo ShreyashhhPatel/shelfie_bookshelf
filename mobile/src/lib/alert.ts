@@ -1,58 +1,39 @@
+import { Alert, Platform } from "react-native";
+
+type AlertButton = {
+  text?: string;
+  style?: "default" | "cancel" | "destructive";
+  onPress?: () => void;
+};
+
 /**
- * Cross-platform alerts.
- *
- * react-native-web ships `Alert.alert` as an empty function -- not a warning,
- * not a throw, a no-op that returns undefined. Every error the app reported
- * through it was therefore *completely silent* on web: permission denials,
- * failed uploads, failed deletes. The code looked correct and told the user
- * nothing.
- *
- * These wrappers are the only alert path the app uses. Nothing should import
- * `Alert` from react-native directly.
+ * react-native-web ships `Alert.alert` as an empty no-op, so on web every
+ * error message and confirmation in this app would silently do nothing --
+ * a failed upload looked identical to no tap at all. Map to the browser's
+ * native dialogs there and defer to the real Alert everywhere else.
  */
-
-import { Alert, Platform } from 'react-native';
-
-/** True when RN's Alert is the react-native-web stub rather than a real one. */
-const ALERT_IS_NOOP = Platform.OS === 'web';
-
-export function notify(title: string, message?: string): void {
-  if (!ALERT_IS_NOOP) {
-    Alert.alert(title, message);
+export function alert(title: string, message?: string, buttons?: AlertButton[]): void {
+  if (Platform.OS !== "web") {
+    Alert.alert(title, message, buttons);
     return;
   }
 
-  const text = message ? `${title}\n\n${message}` : title;
-  if (typeof globalThis.alert === 'function') {
-    globalThis.alert(text);
-  } else {
-    // Last resort: a browser with alerts suppressed still gets a console
-    // record, which beats the silence this module exists to fix.
-    console.warn(text);
-  }
-}
+  const body = [title, message].filter(Boolean).join("\n\n");
+  const actions = (buttons ?? []).filter((b) => b.style !== "cancel");
 
-/**
- * Ask a yes/no question. Resolves true if the user agreed.
- *
- * Destructive by default, since every current caller is a delete or discard.
- */
-export function confirm(
-  title: string,
-  message: string,
-  confirmLabel = 'OK',
-): Promise<boolean> {
-  if (ALERT_IS_NOOP) {
-    const text = `${title}\n\n${message}`;
-    return Promise.resolve(
-      typeof globalThis.confirm === 'function' ? globalThis.confirm(text) : true,
-    );
+  // Nothing to confirm -- just report it.
+  if (actions.length === 0) {
+    window.alert(body);
+    return;
   }
 
-  return new Promise((resolve) => {
-    Alert.alert(title, message, [
-      { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-      { text: confirmLabel, style: 'destructive', onPress: () => resolve(true) },
-    ]);
-  });
+  // RN can stack several actions; the browser gives us one OK. Offer the
+  // last action (the affirmative one in every call site here), and only
+  // make it cancellable if the caller actually provided a cancel button.
+  const action = actions[actions.length - 1];
+  const cancellable = (buttons ?? []).some((b) => b.style === "cancel");
+
+  if (cancellable ? window.confirm(body) : (window.alert(body), true)) {
+    action.onPress?.();
+  }
 }

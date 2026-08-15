@@ -1,146 +1,74 @@
-# Planted ambiguities
+# catalog.csv — planted ambiguities
 
-`catalog.csv` is 109 rows. Most of them are ordinary and exist so the hard rows
-have somewhere to hide. Six cases are planted deliberately, each one a distinct
-way that "read the spine, look up the title" quietly returns the wrong book.
+`catalog.csv` has 114 entries — 109 planted plus the five books in
+`backend/test_photos`, so a scan of those shelves resolves against the catalog
+instead of falling through to unmatched. Six ambiguities were deliberately planted per
+`CONTEXT.md`. This file documents exactly where each one lives and how the
+matcher (`scanner/services/matcher.py`) is expected to handle it.
 
-They are here because a matcher that is only ever tested against unambiguous
-input will look finished and be wrong in production. Every rule below should
-end up as a test in the phase that builds the matcher.
+## 1. Two editions of the same book as separate entries
 
-The recurring theme: **a high score is not the same as a confident answer.**
-Cases 1, 4, 5, and 6 all produce a top candidate scoring near 1.0 that is a
-coin flip between two rows. That is what `Detection.margin` exists for — the
-gap to the runner-up, not the top score, is what may auto-accept a match.
+`Fahrenheit 451` by Ray Bradbury appears twice — `year=1953` and `year=2013`.
+Title and author are identical, so the matcher produces two candidates with
+the same top score and ~0 margin. Result: **needs_review**, tie → user picks
+the edition.
 
----
+## 2. One book under two titles (UK/US)
 
-## 1. Prefix collision — the Dune cluster
+- `Northern Lights` (Philip Pullman) has `alt_titles=The Golden Compass`.
+- `Harry Potter and the Philosopher's Stone` (J.K. Rowling) has
+  `alt_titles=Harry Potter and the Sorcerer's Stone`.
 
-**Rows:** `Dune`, `Dune Messiah`, `Children of Dune`, `God Emperor of Dune`,
-`Heretics of Dune` (all Frank Herbert). Second instance: `Foundation`,
-`Foundation and Empire`, `Second Foundation` (Isaac Asimov).
+A VLM read of either title string should hit the *same* catalog row (alt-title
+match), not create an ambiguity. This is a matching-correctness case, not a
+review case.
 
-**The failure:** substring search for `dune` returns five rows. A spine that
-genuinely reads `DUNE` is the *shortest* of them, so any scorer that rewards
-length of overlap, or that takes "first result", picks a sequel. The reverse
-also bites: a spine reading `DUNE MESSIAH` partially matches `Dune`, and a
-prefix-weighted scorer can rank the parent above the exact hit.
+## 3. Two genuinely different books sharing a title
 
-**Resolution:** exact match on `norm_title` wins outright and short-circuits
-before any fuzzy pass. Fuzzy scoring must be symmetric — penalize catalog
-tokens missing from the read as hard as it penalizes read tokens missing from
-the catalog — so `Dune` does not score well against `Dune Messiah`.
+- `The Power` — Naomi Alderman (2016, speculative fiction) vs. Rhonda Byrne
+  (2010, self-help, part of "The Secret" series).
+- `The Secret` — Rhonda Byrne (2006, self-help) vs. Julie Garwood (1992,
+  historical romance).
 
-**Note:** this cluster is also the search-endpoint smoke test. `?q=dune`
-returns `Dune`, `Dune Messiah`, and `Children of Dune` among its hits; that is
-correct behavior for *search*, which is meant to be broad. Search and matching
-are different jobs and must not share a ranking function.
+Title score ties between the two candidates. If the VLM also read the author,
+author score breaks the tie cleanly. If the author crop was unreadable, the
+margin stays small → **needs_review**.
 
-## 2. Alternate titles — Northern Lights / The Golden Compass
+## 4. An omnibus alongside its individual volumes
 
-**Rows:** `Northern Lights` (Philip Pullman) carries `The Golden Compass` in
-`alt_titles`. Five more: `The Hobbit` / *There and Back Again*, `1984` /
-*Nineteen Eighty-Four*, `Slaughterhouse-Five` / *The Children's Crusade*,
-`Gödel, Escher, Bach` / *GEB*, `The Design of Everyday Things` /
-*The Psychology of Everyday Things* (a real 1990 retitling).
+- `The Lord of the Rings` (`is_omnibus=true`, `contained_titles` = Fellowship
+  of the Ring | The Two Towers | The Return of the King) alongside three
+  separate rows for each volume.
+- `The Ultimate Hitchhiker's Guide to the Galaxy` (`is_omnibus=true`,
+  contains all five Hitchhiker's Guide books) alongside separate rows for
+  the first three individual volumes.
 
-**The failure:** a US copy on the shelf physically prints `THE GOLDEN COMPASS`.
-Matching only against `title` returns nothing, and the book falls through to
-review — or worse, fuzzy-matches something unrelated rather than admitting the
-miss.
+A spine reading "The Fellowship of the Ring" should match the individual
+volume, not the omnibus — title score for the exact volume title beats the
+omnibus's differently-worded title.
 
-**Resolution:** build the match index over `all_titles`, not `title`. An
-alt-title hit is a full-strength match, not a discounted one, but the response
-should report which string matched so the UI can show the user the name on the
-spine they are holding.
+## 5. Titles that are substrings of others
 
-**Also covers:** `1984` is the only numeric title in the catalog and the
-likeliest thing a VLM garbles into a year, an ISBN fragment, or `l984`.
+- `Dune` vs. `Dune Messiah` (Frank Herbert).
+- `Foundation` vs. `Foundation and Empire` vs. `Second Foundation` (Isaac
+  Asimov).
 
-## 3. Omnibus containment — The Lord of the Rings
+A naive substring/contains match would conflate these. The fuzzy title score
+must not give `Dune Messiah` a near-perfect score against a `Dune` read (and
+vice versa) — this is exercised directly in
+`scanner/tests/test_matcher.py::test_substring_trap_dune_vs_dune_messiah`.
 
-**Rows:** `The Lord of the Rings` (`is_omnibus=true`, contains the three
-volumes), which are *also* present as three standalone rows. Same shape for
-`His Dark Materials` over the Pullman trilogy and `The Earthsea Quartet` over
-four Le Guin novels.
+## 6. Author names in multiple forms
 
-**The failure:** one spine, several works. A shelf holding the single-volume
-LOTR and a shelf holding three separate paperbacks are different shelves, and
-naive matching collapses them. Worse, `contained_titles` overlaps
-`Northern Lights`, so the omnibus competes with case 2's alt-title row.
+- **Lastname, Firstname order:** `Animal Farm` — author stored as
+  `Orwell, George`, while `1984` (same author) is stored as `George Orwell`.
+- **Accents:** `One Hundred Years of Solitude` — author stored as
+  `Gabriel García Márquez` (accented), while `Love in the Time of Cholera`
+  (same author) is stored as `Gabriel Garcia Marquez` (unaccented).
+- **Initials, spacing variant:** `Harry Potter and the Philosopher's Stone` —
+  author `J.K. Rowling` (no spaces), while `The Casual Vacancy` (same author)
+  is stored as `J. K. Rowling` (spaced initials).
 
-**Resolution:** `contained_titles` is *not* part of the match index. A spine
-reading `THE TWO TOWERS` must match the standalone row, never the omnibus that
-contains it; a spine reading `THE LORD OF THE RINGS` must match the omnibus,
-never `The Fellowship of the Ring`. Containment is for what happens *after* a
-match — offering "add all three volumes?" once the omnibus is confirmed.
-
-## 4. Same title, different author — The Idiot
-
-**Rows:** `The Idiot` / Fyodor Dostoevsky (1869) and `The Idiot` / Elif Batuman
-(2017). The only duplicated title in the catalog.
-
-**The failure:** title is not a key. Title-only matching returns two rows with
-identical scores, and picking either one is a 50% error rate. This is why the
-uniqueness constraint in `models.py` is on `(norm_title, norm_author)`.
-
-**Resolution:** author is the tiebreak. If the VLM read an author, match on the
-pair. If it did not — very common, since many spines print only the title, or
-the author is in unreadable type at the foot — the correct outcome is *not* to
-guess: margin is zero, and the detection goes to review with both rows offered
-as candidates.
-
-## 5. Same author name, different people — David Mitchell
-
-**Rows:** `Cloud Atlas`, `The Bone Clocks`, `number9dream` (David Mitchell, the
-novelist) and `Back Story` (David Mitchell, the comedian — a real and
-separate person).
-
-**The failure:** the inverse of case 4. Author is not a key either, so author
-is only a *tiebreak* and never a filter you trust on its own. A matcher that
-resolves a poorly-read title by leaning on a confidently-read author will
-happily put a memoir by one man into a library of novels by another.
-
-**Resolution:** never let author alone select a row. Author raises or lowers a
-candidate that a title already put in contention. A spine where only the author
-is legible must go to review — `author_surname()` in `constants.py` is the
-coarsest fallback key for a reason, and its docstring says so.
-
-**Near miss, not planted:** `Charlotte Brontë` and `Emily Brontë` share a
-surname and a publication year (1847). Useful for testing that
-`author_surname()` is treated as weak evidence.
-
-## 6. Same main title, different subtitle — Sapiens
-
-**Rows:** `Sapiens: A Brief History of Humankind` (2011) and
-`Sapiens: A Graphic History, Volume 1` (2020), both Yuval Noah Harari. Adjacent
-rows: `Homo Deus: A Brief History of Tomorrow` shares the *subtitle* pattern
-with the first, and `The Gene: An Intimate History` /
-`The Emperor of All Maladies: A Biography of Cancer` are the same author with
-different subtitles.
-
-**The failure:** subtitle stripping is the obvious normalization, and it is
-wrong here. Reduce both rows to `sapiens` and they become the same book, which
-also violates the `(norm_title, norm_author)` constraint at load time. The two
-are genuinely different objects and look completely different on a shelf.
-
-**Resolution:** `normalize_title()` deliberately keeps subtitles.
-`main_title()` exists as a separate, explicitly lossy helper for *widening a
-search after an exact match has already failed* — never for deciding one. A
-spine reading only `SAPIENS` (very likely: the subtitle is set small and is the
-first thing a crop loses) matches both at equal score, margin is zero, and it
-goes to review. That is the right answer, not a bug.
-
----
-
-## Summary
-
-| # | Case | Canonical rows | Resolved by |
-|---|------|----------------|-------------|
-| 1 | Prefix collision | Dune ×5, Foundation ×3 | Exact match short-circuits; symmetric fuzzy scoring |
-| 2 | Alternate titles | Northern Lights (+5 more) | Index over `all_titles`; full-strength hit |
-| 3 | Omnibus containment | LOTR, His Dark Materials, Earthsea Quartet | `contained_titles` excluded from the index |
-| 4 | Same title, two authors | The Idiot ×2 | Author as tiebreak; review when absent |
-| 5 | Same author, two people | David Mitchell ×4 | Author never selects alone |
-| 6 | Same title, two subtitles | Sapiens ×2 | Subtitles kept in `normalize_title()` |
+The structured author matcher normalizes all three forms to the same surname
++ initials representation before comparing, so a VLM read of any form matches
+a catalog row regardless of which form the catalog happened to store.
