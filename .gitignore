@@ -1,3 +1,6 @@
+# One ignore file for the whole repo. Both halves live here -- do not add a
+# nested .gitignore under backend/ or mobile/.
+
 # Python / Django
 __pycache__/
 *.py[cod]
@@ -13,10 +16,30 @@ media/
 .env.*
 !.env.example
 
+# Signing material and certificates
+*.pem
+*.key
+*.p8
+*.p12
+*.jks
+*.mobileprovision
+
 # Node / Expo
 node_modules/
 .expo/
+dist/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+*.tsbuildinfo
 *.log
+
+# Native output. Only exists after `expo prebuild`; paths are explicit so a
+# stray directory named ios/ or android/ elsewhere is not silently swallowed.
+mobile/ios/
+mobile/android/
+.kotlin/
+*.orig.*
 
 # OS
 .DS_Store
