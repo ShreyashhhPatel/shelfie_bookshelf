@@ -1,28 +1,80 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 #
-# Task runner for Shelfie. `mise tasks` lists these; `mise run <name>` runs one.
+# Every operation on this project runs through `mise run <task>`.
+# `mise tasks` lists them; `mise run doctor` tells you what's missing.
 #
-#   mise run backend    Django API on :8000
-#   mise run mobile     Expo (web + QR for Expo Go) on :8081
-#   mise run test       pytest suite (mocked VLM, no network, no cost)
-#   mise run pipeline   every pipeline node against a real photo (billed)
+#   setup     install everything (python venv, npm, db, catalog)
+#   doctor    check the environment and say what to fix
+#   dev       backend + Expo together in one terminal
+#   backend   Django API on :8000
+#   mobile    Expo on :8081 — QR for Expo Go, press w for web
+#   web       Expo in the browser only
+#   lan       point the app at this Mac's LAN IP (for a physical phone)
+#   sdk       switch the Expo SDK to match your Expo Go app
+#   test      the pytest suite (mocked VLM — no network, no cost)
+#   pipeline  check each pipeline node against a real photo (billed)
+#   catalog   reload catalog.csv into the database
 #
-# Node is pinned; Python deliberately is not -- the backend runs out of
-# backend/venv, which is built against its own interpreter.
+# Node is pinned so bundling is reproducible. Python deliberately is not: the
+# backend runs out of backend/venv against its own interpreter, and letting
+# mise swap Pythons underneath it would break the venv.
 
 [tools]
 node = "24"
 
+[settings]
+# These tasks are POSIX shell. Windows defaults to `cmd /c`, which cannot run
+# them, so point it at Git Bash (ships with Git for Windows). The scripts/
+# directory is bash too, so Git Bash is required on Windows either way.
+windows_default_inline_shell_args = "bash -c"
+windows_default_file_shell_args = "bash"
+
 [env]
 _.file = "backend/.env"
+
+# --- setup ----------------------------------------------------------------
+
+[tasks.setup]
+description = "Install everything: python venv, npm packages, database, catalog"
+dir = "{{config_root}}"
+run = """
+set -e
+echo "==> backend: virtualenv"
+PYBIN="$(command -v python3 || command -v python)"
+[ -n "$PYBIN" ] || { echo "no python3 on PATH"; exit 1; }
+[ -x backend/venv/bin/python ] || [ -x backend/venv/Scripts/python.exe ] || "$PYBIN" -m venv backend/venv
+# Windows virtualenvs use Scripts/python.exe instead of bin/python.
+PY=backend/venv/bin/python; [ -x "$PY" ] || PY=backend/venv/Scripts/python.exe
+"$PY" -m pip install --quiet --upgrade pip
+"$PY" -m pip install --quiet -r backend/requirements.txt
+echo "==> backend: database + catalog"
+"$PY" backend/manage.py migrate --noinput
+"$PY" backend/manage.py load_catalog
+echo "==> mobile: npm packages"
+cd mobile && npm install --silent
+echo
+echo "Setup complete. Next:  mise run doctor"
+"""
+
+[tasks.doctor]
+description = "Check the environment and report what needs fixing"
+dir = "{{config_root}}"
+run = "bash scripts/doctor.sh"
+
+# --- running --------------------------------------------------------------
+
+[tasks.dev]
+description = "Run backend + Expo together (output prefixed; Ctrl-C stops both)"
+depends = ["backend", "mobile"]
 
 [tasks.backend]
 description = "Run the Django API on :8000"
 dir = "{{config_root}}/backend"
 run = """
-[ -x venv/bin/python ] || { echo "missing backend/venv -- python3 -m venv venv && venv/bin/pip install -r requirements.txt"; exit 1; }
-venv/bin/python manage.py migrate --noinput
-venv/bin/python manage.py runserver 0.0.0.0:8000
+PY=venv/bin/python; [ -x "$PY" ] || PY=venv/Scripts/python.exe
+[ -x "$PY" ] || { echo "no backend/venv -- run: mise run setup"; exit 1; }
+"$PY" manage.py migrate --noinput
+"$PY" manage.py runserver 0.0.0.0:8000
 """
 
 [tasks.mobile]
@@ -41,16 +93,56 @@ run = """
 npm run web
 """
 
-# Extra CLI args pass straight through, e.g.
+# --- configuration --------------------------------------------------------
+
+[tasks.lan]
+description = "Point the app at this machine's LAN IP so a physical phone can reach it"
+dir = "{{config_root}}"
+run = "bash scripts/lan-ip.sh"
+
+[tasks.sdk]
+description = "Switch the Expo SDK to match your Expo Go app (no arg lists options)"
+dir = "{{config_root}}"
+run = 'bash scripts/expo-sdk.sh {{arg(name="version", default="")}}'
+
+[tasks.catalog]
+description = "Reload catalog.csv into the database (WARNING: blanks existing library rows)"
+dir = "{{config_root}}/backend"
+run = """
+echo "Note: load_catalog deletes and recreates every CatalogBook row."
+echo "LibraryEntry.book is on_delete=SET_NULL, so existing library entries"
+echo "lose their title and render blank. See README > Known issues."
+echo
+PY=venv/bin/python; [ -x "$PY" ] || PY=venv/Scripts/python.exe
+"$PY" manage.py load_catalog
+"""
+
+# --- checking -------------------------------------------------------------
+# Extra arguments pass straight through, e.g.
 #   mise run test -k matcher
 #   mise run pipeline --skip-vlm
 
 [tasks.test]
 description = "Run the backend test suite (VLM mocked -- no network, no cost)"
 dir = "{{config_root}}/backend"
-run = "venv/bin/python -m pytest -q"
+run = """
+PY=venv/bin/python; [ -x "$PY" ] || PY=venv/Scripts/python.exe
+"$PY" -m pytest -q
+"""
+
+[tasks.typecheck]
+description = "Typecheck the mobile app"
+dir = "{{config_root}}/mobile"
+run = "npx tsc --noEmit"
 
 [tasks.pipeline]
 description = "Check each pipeline node (convert/detect/crop/read/match) on a real photo"
 dir = "{{config_root}}/backend"
-run = "venv/bin/python scripts/pipeline_check.py"
+run = """
+PY=venv/bin/python; [ -x "$PY" ] || PY=venv/Scripts/python.exe
+"$PY" scripts/pipeline_check.py
+"""
+
+[tasks.check]
+description = "Everything that runs offline: tests + typecheck"
+depends = ["test", "typecheck"]
