@@ -39,7 +39,9 @@ class StageTimer:
 
 def _catalog_as_dicts() -> list[dict]:
     return list(
-        CatalogBook.objects.all().values("id", "title", "author", "alt_titles", "spine_color", "spine_hex")
+        CatalogBook.objects.all().values(
+            "id", "title", "author", "alt_titles", "year", "series", "spine_color", "spine_hex"
+        )
     )
 
 
@@ -50,9 +52,14 @@ def _candidates_payload(result: matcher.MatchResult) -> list[dict]:
             "title": c.book["title"],
             "author": c.book["author"],
             "score": round(c.score, 4),
-            # Carried onto the review card: when two candidates are a near-tie
-            # on title and author, colour is the thing the user can settle by
-            # glancing at the shelf.
+            # Year and series are what actually separate two candidates the
+            # matcher has tied: the 2016 Alderman "The Power" from the 2010
+            # Byrne one, or the two editions of Fahrenheit 451. Without them
+            # the review card shows two identical rows and the user cannot
+            # resolve the very ambiguities the catalog plants on purpose.
+            "year": c.book.get("year"),
+            "series": c.book.get("series", ""),
+            # Colour settles a near-tie by glancing at the shelf.
             "spine_color": c.book.get("spine_color", ""),
             "spine_hex": c.book.get("spine_hex", ""),
         }
@@ -70,6 +77,17 @@ def apply_read_to_detection(detection: Detection, read: dict, catalog: list[dict
     # overlapping boxes around one spine). The row is kept rather than dropped
     # -- nothing in this pipeline disappears silently -- but it leaves the
     # review queue, so the user isn't asked about the same book three times.
+    # Not a book at all -- a pillar, a carton, furniture the detector boxed.
+    # Discarded rather than queued: there is nothing for a person to identify,
+    # and leaving it in review buries the blurry spines that do need them.
+    if read.get("status") == "not_a_book":
+        detection.status = Detection.STATUS_DISCARDED
+        detection.confidence = None
+        detection.margin = None
+        detection.candidates = []
+        detection.chosen_book = None
+        return detection
+
     if read.get("status") == "duplicate":
         detection.status = Detection.STATUS_DISCARDED
         detection.confidence = None

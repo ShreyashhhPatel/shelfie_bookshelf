@@ -137,3 +137,40 @@ def test_catalog_without_colour_is_a_no_op():
 def test_tiebreak_handles_an_empty_candidate_list():
     empty = MatchResult(status=matcher.STATUS_UNMATCHED, confidence=None, margin=None, candidates=[])
     assert apply_color_tiebreak(empty, "purple").candidates == []
+
+
+# ---------- not_a_book: pillars, cartons, furniture ----------
+
+
+def test_not_a_book_is_separated_from_merely_unreadable():
+    """
+    The distinction that keeps the review queue useful. Both crops are
+    unreadable, but only one is worth a person's time.
+    """
+    parsed = [
+        {"index": 1, "title": None, "readable": False, "not_a_book": True},   # a pillar
+        {"index": 2, "title": None, "readable": False, "not_a_book": False},  # a blurry spine
+    ]
+    results = vlm_read._normalize_batch_results(parsed, 2)
+
+    assert results[0]["status"] == "not_a_book"
+    assert results[1]["status"] == "unreadable"
+
+
+def test_a_readable_spine_is_never_marked_not_a_book():
+    """A model contradicting itself must not lose a book we could read."""
+    parsed = [{"index": 1, "title": "Dune", "readable": True, "not_a_book": True}]
+    assert vlm_read._normalize_batch_results(parsed, 1)[0]["status"] == "ok"
+
+
+def test_missing_not_a_book_key_defaults_to_false():
+    parsed = [{"index": 1, "title": None, "readable": False}]
+    result = vlm_read._normalize_batch_results(parsed, 1)[0]
+    assert result["not_a_book"] is False
+    assert result["status"] == "unreadable"
+
+
+def test_prompt_explains_the_not_a_book_distinction():
+    prompt = vlm_read._build_batch_prompt(2)
+    assert "not_a_book" in prompt
+    assert "pillar" in prompt

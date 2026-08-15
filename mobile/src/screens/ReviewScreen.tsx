@@ -18,6 +18,16 @@ import type { RootStackParamList } from "../navigation/types";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Review">;
 
+/**
+ * The dim third line on a candidate row. This is what actually separates two
+ * rows the matcher has tied -- Alderman's 2016 "The Power" from Byrne's 2010
+ * one, or the two editions of Fahrenheit 451. Without it the user is shown
+ * two identical rows and asked to pick.
+ */
+function metaLine(book: { year: number | null; series?: string; spine_color?: string }): string {
+  return [book.year, book.series, book.spine_color].filter(Boolean).join(" · ");
+}
+
 export default function ReviewScreen({ route, navigation }: Props) {
   const { scanId, detectionId } = route.params;
   const [detection, setDetection] = useState<Detection | null>(null);
@@ -146,9 +156,11 @@ export default function ReviewScreen({ route, navigation }: Props) {
               disabled={busy}
               onPress={() => runAction(() => confirmDetection(detectionId, { book_id: c.book_id }))}
             >
+              {!!c.spine_hex && <View style={[styles.swatch, { backgroundColor: c.spine_hex }]} />}
               <View style={styles.rowText}>
                 <Text style={styles.candidateTitle}>{c.title}</Text>
                 <Text style={styles.candidateAuthor}>{c.author}</Text>
+                {!!metaLine(c) && <Text style={styles.candidateMeta}>{metaLine(c)}</Text>}
               </View>
               <Text style={styles.candidateScore}>{(c.score * 100).toFixed(0)}%</Text>
             </TouchableOpacity>
@@ -171,9 +183,11 @@ export default function ReviewScreen({ route, navigation }: Props) {
             disabled={busy}
             onPress={() => runAction(() => confirmDetection(detectionId, { book_id: r.id }))}
           >
+            {!!r.spine_hex && <View style={[styles.swatch, { backgroundColor: r.spine_hex }]} />}
             <View style={styles.rowText}>
               <Text style={styles.candidateTitle}>{r.title}</Text>
               <Text style={styles.candidateAuthor}>{r.author}</Text>
+              {!!metaLine(r) && <Text style={styles.candidateMeta}>{metaLine(r)}</Text>}
             </View>
           </TouchableOpacity>
         ))}
@@ -248,7 +262,18 @@ const styles = StyleSheet.create({
   rowText: { flex: 1 },
   candidateTitle: { fontSize: 15, fontWeight: "600", color: "#1a2b3c" },
   candidateAuthor: { fontSize: 13, color: "#5b6b7a", marginTop: 2 },
+  // Deliberately dimmer and smaller than the author: it's the tiebreaker you
+  // read only when the two lines above have failed to tell rows apart.
+  candidateMeta: { fontSize: 11, color: "#8d9aa7", marginTop: 3 },
   candidateScore: { fontSize: 13, color: "#2f6690", fontWeight: "600" },
+  swatch: {
+    width: 10,
+    height: 34,
+    borderRadius: 3,
+    marginRight: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#c7d0d9",
+  },
   input: {
     borderWidth: 1,
     borderColor: "#dbe2e8",

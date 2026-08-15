@@ -136,8 +136,13 @@ def _build_batch_prompt(n: int) -> str:
         "Respond with ONLY a JSON array, one object per image in order, shaped "
         'like: {"index": <1-based image number>, "title": <string or null>, '
         '"author": <string or null>, "edition": <string or null> ,"readable": <true|false>, '
-        '"spine_color": <string or null>, '
+        '"spine_color": <string or null>, "not_a_book": <true|false>, '
         '"duplicate_of": <1-based image number or null>}\n\n'
+        'Set "not_a_book" true only when the crop contains no book at all — a '
+        "wall, a pillar, a cardboard box, furniture, a plant. A book whose "
+        "spine you simply cannot read is NOT this: that is readable=false with "
+        "not_a_book false. The distinction matters — an unreadable spine gets "
+        "shown to a person to identify, while a pillar is thrown away.\n\n"
         f'For "spine_color", give the single dominant background colour of the '
         f"spine — not the colour of the lettering — using EXACTLY one of these "
         f"words: {', '.join(SPINE_COLOR_VOCABULARY)}. Pick the closest one "
@@ -308,6 +313,10 @@ def _normalize_batch_results(parsed: list, expected_count: int) -> list[dict]:
     for i in range(1, expected_count + 1):
         item = by_index.get(i)
         readable = bool(item and item.get("readable", True) and item.get("title"))
+        # The detector boxes pillars, cartons and furniture. Those are not
+        # "a spine I couldn't read" -- nobody can identify them -- so they are
+        # separated here and discarded rather than queued for review.
+        not_a_book = bool(item and item.get("not_a_book"))
         # Only a crop we actually read can be a duplicate of another: calling an
         # unreadable crop a duplicate would hide it behind the wrong status.
         duplicate_of = _duplicate_target(item, i, expected_count, duplicates) if readable else None
@@ -324,8 +333,20 @@ def _normalize_batch_results(parsed: list, expected_count: int) -> list[dict]:
                 # the crop, not the lettering, so a blurry spine can still
                 # narrow the candidate list on the review card.
                 "spine_color": normalize_spine_color(item.get("spine_color")) if item else None,
+                "not_a_book": not_a_book,
                 "readable": readable and duplicate_of is None,
-                "status": "duplicate" if duplicate_of is not None else ("ok" if readable else "unreadable"),
+                "status": (
+                    "duplicate"
+                    if duplicate_of is not None
+                    # Checked before "unreadable": a pillar is technically
+                    # unreadable too, but routing it to a person to identify
+                    # buries the genuinely blurry spines that need them.
+                    else "not_a_book"
+                    if not_a_book and not readable
+                    else "ok"
+                    if readable
+                    else "unreadable"
+                ),
             }
         )
     return results

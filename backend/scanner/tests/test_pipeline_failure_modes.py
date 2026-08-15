@@ -152,17 +152,14 @@ def test_vlm_call_succeeds_on_retry_after_one_transient_failure():
 
         results = vlm_read.read_spines_batch([_jpeg_bytes()])
 
-    assert results == [
-        {
-            "index": 1,
-            "title": "Dune",
-            "author": "Frank Herbert",
-            # A model that omits the colour still yields a well-formed read.
-            "spine_color": None,
-            "readable": True,
-            "status": "ok",
-        }
-    ]
+    # Asserted field by field rather than as a whole dict: this test is about
+    # the retry succeeding, and pinning the exact shape makes it fail every
+    # time a new field is added to a read for reasons unrelated to retries.
+    assert len(results) == 1
+    assert results[0]["title"] == "Dune"
+    assert results[0]["author"] == "Frank Herbert"
+    assert results[0]["readable"] is True
+    assert results[0]["status"] == "ok"
 
 
 def test_pipeline_marks_detection_failed_when_vlm_permanently_errors(dune_catalog):

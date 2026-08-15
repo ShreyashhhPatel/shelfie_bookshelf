@@ -14,6 +14,10 @@ export interface Candidate {
   title: string;
   author: string;
   score: number;
+  year: number | null;
+  series: string;
+  spine_color: string;
+  spine_hex: string;
 }
 
 export interface Detection {
@@ -54,4 +58,6 @@ export interface CatalogSearchResult {
   author: string;
   year: number | null;
   series: string;
+  spine_color: string;
+  spine_hex: string;
 }
