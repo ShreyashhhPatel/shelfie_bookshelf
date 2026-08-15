@@ -153,6 +153,33 @@ REST_FRAMEWORK = {
 }
 
 
+# Logging
+#
+# Django only configures the 'django' logger, so app loggers propagate to a
+# root with no handler and Python's last-resort handler prints WARNING and
+# above. Everything at INFO -- per-stage timings, the whole-image fallback,
+# a successful repair retry -- was therefore silently discarded, which is
+# exactly the information needed to debug a scan.
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'simple': {'format': '{levelname} {name}: {message}', 'style': '{'},
+    },
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'simple'},
+    },
+    'loggers': {
+        'scanner': {
+            'handlers': ['console'],
+            'level': os.getenv('SCANNER_LOG_LEVEL', 'INFO'),
+            'propagate': False,
+        },
+    },
+}
+
+
 # CORS
 # Wide open in dev so the Expo client can reach the API from a device or
 # simulator on the LAN, where the origin is not known ahead of time.

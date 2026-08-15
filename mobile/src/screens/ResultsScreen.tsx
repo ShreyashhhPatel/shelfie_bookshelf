@@ -29,9 +29,12 @@ import type { RootStackScreenProps } from '../navigation/types';
 function DetectionRow({ detection }: { detection: Detection }) {
   const top = detection.candidates[0];
   const unread = !detection.raw_title.trim();
+  // Kept in the list but dimmed: a duplicate is a real thing the detector saw,
+  // and hiding it makes the crop count stop matching the photo.
+  const duplicate = detection.duplicate_of !== null;
 
   return (
-    <View style={styles.row}>
+    <View style={[styles.row, duplicate && styles.rowDuplicate]}>
       {detection.crop_url ? (
         <Image
           source={{ uri: detection.crop_url }}
@@ -74,6 +77,9 @@ function DetectionRow({ detection }: { detection: Detection }) {
 
         <View style={styles.badges}>
           <StatusBadge status={detection.status} />
+          {duplicate ? (
+            <Text style={styles.duplicate}>Same book as an earlier crop</Text>
+          ) : null}
         </View>
       </View>
     </View>
@@ -157,6 +163,11 @@ export default function ResultsScreen({ route }: RootStackScreenProps<'Results'>
             <Text style={styles.summaryBody}>
               {scan.counts.auto_matched} matched confidently ·{' '}
               {scan.counts.needs_review} need review
+              {scan.counts.duplicates > 0
+                ? ` · ${scan.counts.duplicates} duplicate ${
+                    scan.counts.duplicates === 1 ? 'crop' : 'crops'
+                  }`
+                : ''}
             </Text>
             {stages.length ? (
               <Text style={styles.timings}>
@@ -220,6 +231,13 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
+  },
+  rowDuplicate: {
+    opacity: 0.55,
+  },
+  duplicate: {
+    color: '#8C93A1',
+    fontSize: 11,
   },
   thumb: {
     backgroundColor: '#F2F4F7',

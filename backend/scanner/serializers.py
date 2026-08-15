@@ -99,6 +99,7 @@ class DetectionSerializer(serializers.ModelSerializer):
             'match',
             'margin',
             'status',
+            'duplicate_of',
         )
         read_only_fields = fields
 
@@ -154,16 +155,23 @@ class ScanSerializer(serializers.ModelSerializer):
             return False
 
     def get_counts(self, scan) -> dict:
-        """Pre-counted so the client does not have to filter the list itself."""
+        """Pre-counted so the client does not have to filter the list itself.
+
+        `total` excludes duplicates: a shelf of 20 books that the detector
+        boxed 24 times has 20 books on it, and telling the user otherwise is
+        just wrong.
+        """
         detections = list(scan.detections.all())
+        unique = [d for d in detections if d.duplicate_of_id is None]
         return {
-            'total': len(detections),
+            'total': len(unique),
             'auto_matched': sum(
-                1 for d in detections if d.status == Detection.Status.AUTO_MATCHED
+                1 for d in unique if d.status == Detection.Status.AUTO_MATCHED
             ),
             'needs_review': sum(
-                1 for d in detections if d.status == Detection.Status.NEEDS_REVIEW
+                1 for d in unique if d.status == Detection.Status.NEEDS_REVIEW
             ),
+            'duplicates': len(detections) - len(unique),
         }
 
 

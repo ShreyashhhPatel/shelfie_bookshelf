@@ -109,12 +109,19 @@ export interface Detection {
   /** Gap to the runner-up. This, not score, is what gated auto-accept. */
   margin: number;
   status: DetectionStatus;
+  /**
+   * Id of an earlier detection showing this same physical book, when the
+   * detector boxed one spine twice. Excluded from `counts.total`.
+   */
+  duplicate_of: number | null;
 }
 
 export interface ScanCounts {
+  /** Distinct books. Excludes duplicate boxes over the same spine. */
   total: number;
   auto_matched: number;
   needs_review: number;
+  duplicates: number;
 }
 
 /**

@@ -4,8 +4,10 @@ Every crop from one photo goes in **one** request. The prompt is the expensive
 part of a per-spine call and it is identical for all of them, so batching
 sends it once instead of once per book, and collapses N round trips into one.
 
-This is deliberately the naive version. One call, no retry, no JSON repair. It
-fails loudly so that the phases which harden it have something real to fix.
+Hardened against the ways a model returns something other than what it was
+asked for: fences and prose are sliced away, and a body that still will not
+parse earns exactly one repair retry. Past that the scan fails with a code the
+UI can act on -- never a crash, and never a silently dropped spine.
 
 What it does not do, on purpose: correct, complete, or canonicalize anything.
 It transcribes. Deciding that "GRIECHISCHES RECHTSDENKEN" is a particular
@@ -16,7 +18,8 @@ inside match errors.
 import json
 import logging
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Sequence
 
@@ -36,17 +39,26 @@ You will receive {count} images, numbered 0 to {last} in the order given.
 For each image, report the title and author printed on that spine.
 
 Return ONLY a JSON array, one object per image, in index order:
-[{{"index": 0, "title": "...", "author": "..."}}]
+[{{"index": 0, "title": "...", "author": "...", "duplicate_of": null}}]
 
 Rules:
 - "index" must be the image's position in the order received.
 - Return exactly {count} objects, one per image, even if some are unreadable.
+- Crops can overlap, so the same physical book sometimes appears twice. When
+  an image shows the same copy of the same book as an EARLIER image, set
+  "duplicate_of" to that earlier index. Otherwise set it to null. Two
+  different copies of the same title are NOT duplicates.
 - Transcribe what is printed. Do not correct spelling, expand abbreviations,
   translate, or complete a title you recognise but cannot fully read.
 - Use an empty string for anything you cannot read. Never guess.
 - The author is often in smaller type at the top or bottom of the spine. If
   only a surname is printed, report only the surname.
 - Ignore publisher names, series numbers, and library stickers."""
+
+REPAIR_PROMPT = """Your previous response was not valid JSON and could not be parsed.
+
+Reply again with ONLY the JSON array. No explanation, no markdown fences, no
+text before or after it. Exactly {count} objects, indices 0 to {last}."""
 
 
 class ReadErrorCode(str, Enum):
@@ -157,10 +169,85 @@ class SpineRead:
     index: int
     title: str
     author: str
+    #: Index of an earlier crop showing this same physical book, when the
+    #: detector boxed one spine twice. Always resolved to a root and always
+    #: less than `index`, so the chain cannot loop.
+    duplicate_of: int | None = None
 
     @property
     def is_empty(self) -> bool:
         return not self.title.strip()
+
+    @property
+    def is_duplicate(self) -> bool:
+        return self.duplicate_of is not None
+
+
+def extract_json_array(text: str) -> str:
+    """Pull a JSON array out of whatever the model wrapped it in.
+
+    Two failure modes, both common enough to be worth handling before spending
+    a second call on a retry:
+
+    1. Markdown fences. The model is asked for JSON and returns ```json ...```
+       despite response_mime_type, particularly when it also wants to explain
+       itself.
+    2. Prose on either side. "Here are the spines: [...]  Let me know if..."
+
+    Slicing first `[` to last `]` handles both, and is safe because the schema
+    is a top-level array -- there is nothing legitimate outside it to lose.
+    """
+    cleaned = text.strip()
+
+    if '```' in cleaned:
+        # Take the largest fenced block rather than the first: a model that
+        # explains itself in a small fence and answers in a big one is more
+        # common than the reverse.
+        blocks = re.findall(r'```(?:json|JSON)?\s*(.*?)```', cleaned, re.DOTALL)
+        if blocks:
+            cleaned = max(blocks, key=len).strip()
+
+    start = cleaned.find('[')
+    end = cleaned.rfind(']')
+    if start != -1 and end > start:
+        return cleaned[start : end + 1]
+
+    return cleaned
+
+
+def resolve_duplicates(pointers: dict[int, int], count: int) -> dict[int, int]:
+    """Validate and flatten model-supplied duplicate pointers.
+
+    The model is asked to say when two crops show the same physical book. It
+    is not trusted to say it coherently, so every pointer is checked:
+
+    - **Self-reference.** `5 -> 5` is dropped. It is meaningless and, followed
+      naively, is an infinite loop.
+    - **Out of range.** An index outside 0..count-1 is dropped rather than
+      raising: one bad pointer should not fail a whole shelf.
+    - **Forward references.** Only pointing at an *earlier* crop is allowed.
+      This is what makes cycles structurally impossible rather than merely
+      unlikely, so `2 -> 3, 3 -> 2` cannot deadlock the resolver.
+    - **Chains.** `3 -> 2 -> 1` collapses to `3 -> 1`, so every duplicate
+      names the original rather than another duplicate.
+    """
+    valid: dict[int, int] = {}
+    for index, target in pointers.items():
+        if not 0 <= index < count or not 0 <= target < count:
+            continue
+        # Backward-only. Also rejects self-reference, since index < index
+        # is never true.
+        if target >= index:
+            continue
+        valid[index] = target
+
+    resolved: dict[int, int] = {}
+    for index in sorted(valid):
+        target = valid[index]
+        # Targets are strictly smaller and already resolved, so this is a
+        # single lookup, not a walk.
+        resolved[index] = resolved.get(target, target)
+    return resolved
 
 
 def get_client():
@@ -194,7 +281,7 @@ def _parse(text: str, expected: int) -> list[SpineRead]:
     rather than silently shifting every later spine onto the wrong book.
     """
     try:
-        payload = json.loads(text)
+        payload = json.loads(extract_json_array(text))
     except json.JSONDecodeError as cause:
         raise VlmReadError(
             ReadErrorCode.MALFORMED_RESPONSE, f'Not JSON: {cause}'
@@ -207,6 +294,7 @@ def _parse(text: str, expected: int) -> list[SpineRead]:
         )
 
     by_index: dict[int, SpineRead] = {}
+    pointers: dict[int, int] = {}
     for item in payload:
         if not isinstance(item, dict):
             continue
@@ -221,6 +309,17 @@ def _parse(text: str, expected: int) -> list[SpineRead]:
             title=str(item.get('title') or '').strip(),
             author=str(item.get('author') or '').strip(),
         )
+        raw_pointer = item.get('duplicate_of')
+        if raw_pointer is not None:
+            try:
+                pointers[index] = int(raw_pointer)
+            except (TypeError, ValueError):
+                # A non-numeric pointer is simply not a duplicate claim.
+                pass
+
+    # Validated separately so one incoherent pointer cannot corrupt the rest.
+    for index, target in resolve_duplicates(pointers, expected).items():
+        by_index[index] = replace(by_index[index], duplicate_of=target)
 
     if len(by_index) != expected:
         logger.warning(
@@ -258,31 +357,49 @@ def read_spines(crops: Sequence[bytes]) -> list[SpineRead]:
         types.Part.from_bytes(data=crop, mime_type='image/jpeg') for crop in crops
     )
 
+    config = types.GenerateContentConfig(
+        temperature=VLM_TEMPERATURE,
+        response_mime_type='application/json',
+        http_options=types.HttpOptions(timeout=VLM_TIMEOUT_SECONDS * 1000),
+    )
+
     logger.info('Reading %d crop(s) in one %s call', len(crops), GEMINI_MODEL)
 
+    def call(parts):
+        try:
+            return client.models.generate_content(
+                model=GEMINI_MODEL, contents=parts, config=config
+            )
+        except VlmReadError:
+            raise
+        except Exception as cause:
+            code = classify(cause)
+            # Full provider text goes to the log, never to the user.
+            logger.warning('Gemini call failed (%s): %s', code.value, cause)
+            raise VlmReadError(code, str(cause)) from cause
+
+    response = call(contents)
+    text = response.text or ''
+
     try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                temperature=VLM_TEMPERATURE,
-                # Asking for JSON is configuration, not repair. There is still
-                # no fallback if the body comes back malformed.
-                response_mime_type='application/json',
-                http_options=types.HttpOptions(timeout=VLM_TIMEOUT_SECONDS * 1000),
-            ),
-        )
-    except VlmReadError:
-        raise
-    except Exception as cause:
-        code = classify(cause)
-        # Full provider text goes to the log, never to the user.
-        logger.warning('Gemini call failed (%s): %s', code.value, cause)
-        raise VlmReadError(code, str(cause)) from cause
+        return _parse(text, len(crops))
+    except VlmReadError as first:
+        if first.code is not ReadErrorCode.MALFORMED_RESPONSE:
+            raise
 
-    if not response.text:
-        raise VlmReadError(
-            ReadErrorCode.MALFORMED_RESPONSE, 'Empty response body.'
-        )
+        # Exactly one repair attempt. The images are re-sent because the API
+        # is stateless, so this costs a second full read -- which is why it
+        # happens once and is not a loop. A model that cannot produce an array
+        # twice will not produce one on the third try either.
+        logger.warning('Unparseable read, attempting one repair: %s', first.detail)
+        repair = REPAIR_PROMPT.format(count=len(crops), last=len(crops) - 1)
+        retry_contents = [prompt, *contents[1:], text[:2000], repair]
 
-    return _parse(response.text, len(crops))
+        retry = call(retry_contents)
+        try:
+            reads = _parse(retry.text or '', len(crops))
+        except VlmReadError as second:
+            logger.warning('Repair retry also unparseable: %s', second.detail)
+            raise
+        logger.info('Repair retry succeeded')
+        return reads

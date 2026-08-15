@@ -13,7 +13,6 @@
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Image,
   Platform,
   Pressable,
@@ -27,6 +26,7 @@ import { SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 
 import { ApiError, uploadScan } from '../api/client';
+import { notify } from '../lib/alert';
 import type { Scan } from '../api/types';
 import type { RootStackScreenProps } from '../navigation/types';
 
@@ -85,7 +85,7 @@ export default function ScanScreen({ navigation }: RootStackScreenProps<'Scan'>)
           cause instanceof ApiError
             ? cause.message
             : 'Could not scan that photo. Try again.';
-        Alert.alert('Upload failed', message);
+        notify('Upload failed', message);
       } finally {
         setBusy(null);
       }
@@ -107,7 +107,7 @@ export default function ScanScreen({ navigation }: RootStackScreenProps<'Scan'>)
             : await ImagePicker.requestMediaLibraryPermissionsAsync();
 
         if (!permission.granted) {
-          Alert.alert(
+          notify(
             'Permission needed',
             source === 'camera'
               ? 'Shelfie needs camera access to photograph a shelf.'

@@ -6,6 +6,8 @@
  * empty body on delete.
  */
 
+import { Platform } from 'react-native';
+
 import type {
   CatalogBook,
   LibraryBook,
@@ -183,15 +185,25 @@ export function searchCatalog(query: string): Promise<Paginated<CatalogBook>> {
  * design in this phase -- detection plus a hosted model read. The timeout is
  * raised accordingly rather than letting the default abort a working scan.
  */
-export function uploadScan(uri: string): Promise<Scan> {
+export async function uploadScan(uri: string): Promise<Scan> {
   const form = new FormData();
-  // React Native's FormData takes this {uri, name, type} shape for files; it
-  // is not the web File object and TypeScript's DOM lib does not describe it.
-  form.append('image', {
-    uri,
-    name: 'shelf.jpg',
-    type: 'image/jpeg',
-  } as unknown as Blob);
+
+  if (Platform.OS === 'web') {
+    // A browser's FormData has no idea what {uri, name, type} means. It
+    // stringifies the object, so the server receives the literal text
+    // "[object Object]" as the image field and every web upload fails with a
+    // confusing validation error. The blob has to be fetched for real.
+    const blob = await (await fetch(uri)).blob();
+    form.append('image', blob, 'shelf.jpg');
+  } else {
+    // React Native's FormData takes this {uri, name, type} shape for files; it
+    // is not the web File object and TypeScript's DOM lib does not describe it.
+    form.append('image', {
+      uri,
+      name: 'shelf.jpg',
+      type: 'image/jpeg',
+    } as unknown as Blob);
+  }
 
   return request<Scan>('/api/scans/', {
     method: 'POST',

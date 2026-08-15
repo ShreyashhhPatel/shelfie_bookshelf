@@ -1,18 +1,15 @@
 /**
  * The library: every book the user has confirmed they own.
  *
- * This is the end of the flow, and the only screen that has a backend to talk
- * to in this phase. It reads /api/library/ and can remove an entry. Adding
- * happens through scanning, which does not exist yet -- hence the empty state
- * saying so rather than offering a button that goes nowhere.
+ * This is the end of the flow: it reads /api/library/ and can remove an entry.
+ * Adding happens by scanning a shelf and confirming what came back, which is
+ * what the empty state points at.
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
-  Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -21,31 +18,11 @@ import {
 } from 'react-native';
 
 import { ApiError, API_BASE_URL, deleteLibraryEntry, getLibrary } from '../api/client';
+import { confirm, notify } from '../lib/alert';
 import type { LibraryBook } from '../api/types';
 import StatusBadge from '../components/StatusBadge';
 
 type LoadState = 'loading' | 'ready' | 'error';
-
-/**
- * React Native's Alert is a no-op under react-native-web, so the web build
- * would delete without ever asking. Each platform gets its own prompt.
- */
-function confirmRemoval(title: string): Promise<boolean> {
-  const message = `Remove "${title}" from your library?`;
-
-  if (Platform.OS === 'web') {
-    return Promise.resolve(
-      typeof globalThis.confirm === 'function' ? globalThis.confirm(message) : true,
-    );
-  }
-
-  return new Promise((resolve) => {
-    Alert.alert('Remove book', message, [
-      { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-      { text: 'Remove', style: 'destructive', onPress: () => resolve(true) },
-    ]);
-  });
-}
 
 export default function LibraryScreen() {
   const [books, setBooks] = useState<LibraryBook[]>([]);
@@ -81,7 +58,12 @@ export default function LibraryScreen() {
   }, [load]);
 
   const onRemove = useCallback(async (book: LibraryBook) => {
-    if (!(await confirmRemoval(book.title))) return;
+    const agreed = await confirm(
+      'Remove book',
+      `Remove "${book.title}" from your library?`,
+      'Remove',
+    );
+    if (!agreed) return;
 
     setRemovingId(book.id);
     // Optimism would be wrong here: a failed delete that has already vanished
@@ -90,13 +72,10 @@ export default function LibraryScreen() {
       await deleteLibraryEntry(book.id);
       setBooks((current) => current.filter((entry) => entry.id !== book.id));
     } catch (cause) {
-      const message =
-        cause instanceof ApiError ? cause.message : 'Could not remove that book.';
-      if (Platform.OS === 'web') {
-        setError(new ApiError(message, cause instanceof ApiError ? cause.status : 0));
-      } else {
-        Alert.alert('Could not remove', message);
-      }
+      notify(
+        'Could not remove',
+        cause instanceof ApiError ? cause.message : 'Could not remove that book.',
+      );
     } finally {
       setRemovingId(null);
     }
@@ -146,8 +125,8 @@ export default function LibraryScreen() {
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>No books yet</Text>
           <Text style={styles.emptyBody}>
-            Scanning a shelf is not wired up yet. Once it is, confirmed books land
-            here.
+            Photograph a shelf with Scan, then confirm what it found. Books you
+            keep land here.
           </Text>
           <Text style={styles.emptyHint}>Pull down to refresh.</Text>
         </View>

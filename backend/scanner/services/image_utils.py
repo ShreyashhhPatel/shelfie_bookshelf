@@ -11,6 +11,15 @@ vision model cannot read.
 import io
 
 from PIL import Image, ImageOps
+from pillow_heif import register_heif_opener
+
+# iPhones shoot HEIC by default and Pillow cannot open it unaided. The mobile
+# client converts before upload, but the API is public and anything can POST
+# to it, so the server refuses to depend on the client having done the right
+# thing. Registering here means every entry point gets it -- the pipeline, a
+# management command, a REPL -- because this is the module they all decode
+# through. Idempotent, so importing repeatedly is harmless.
+register_heif_opener()
 
 from ..constants import (
     CROP_PADDING_PX,

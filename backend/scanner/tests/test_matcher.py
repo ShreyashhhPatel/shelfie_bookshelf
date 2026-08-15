@@ -8,34 +8,16 @@ Read catalog/AMBIGUITIES.md alongside this file; the numbered cases there and
 the test classes here are the same six things.
 """
 
-import csv
-
 import pytest
 
 from scanner.constants import (
     AUTO_ACCEPT_MARGIN,
     AUTO_ACCEPT_SCORE,
-    BACKEND_DIR,
     NO_AUTHOR_SCORE_CAP,
-    split_multi,
 )
-from scanner.services.matcher import CatalogEntry, match
+from scanner.services.matcher import match
 
-
-@pytest.fixture(scope='module')
-def catalog() -> list[CatalogEntry]:
-    path = BACKEND_DIR / 'catalog' / 'catalog.csv'
-    with path.open(newline='', encoding='utf-8') as handle:
-        return [
-            CatalogEntry(
-                id=index,
-                title=row['title'],
-                author=row['author'],
-                alt_titles=tuple(split_multi(row['alt_titles'])),
-                is_omnibus=row['is_omnibus'].strip().lower() == 'true',
-            )
-            for index, row in enumerate(csv.DictReader(handle), start=1)
-        ]
+# The `catalog` fixture lives in conftest.py -- test_vlm_parsing uses it too.
 
 
 def titles(result, count=2):

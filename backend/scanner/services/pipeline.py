@@ -11,16 +11,17 @@ seconds of network wait, and SQLite serializes writes behind it.
 
 import logging
 import time
+from pathlib import Path
 from contextlib import contextmanager
 
 from django.core.files.base import ContentFile
 from django.db import transaction
 
 from ..models import Detection, Scan
-from .image_utils import load_image, prepare_crop
+from .image_utils import load_image, prepare_crop, to_jpeg_bytes
 from .matcher import catalog_entries, match
 from .vlm_read import ReadErrorCode, VlmReadError, read_spines
-from .yolo_detect import detect_book_boxes
+from .yolo_detect import SpineDetection, detect_book_boxes
 
 logger = logging.getLogger(__name__)
 
@@ -68,19 +69,34 @@ def run_scan(scan: Scan) -> Scan:
                 image = load_image(scan.image.read())
             finally:
                 scan.image.close()
+            # An iPhone upload is HEIC, which no browser renders and which the
+            # results screen would show as a broken image. The decoded frame is
+            # written back as JPEG so `image_url` is always displayable, and so
+            # the stored bytes match what the detector actually saw.
+            _normalize_stored_image(scan, image)
 
         _set_status(scan, Scan.Status.DETECTING)
         with timer.stage('detect'):
             spines = detect_book_boxes(image)
 
-        if not spines:
-            scan.timings = timer.timings
-            _set_status(scan, Scan.Status.COMPLETE, timings=True)
-            logger.info('Scan %s found no spines', scan.pk)
-            return scan
+        # A close-up of one or two books, or an angle the detector dislikes,
+        # returns nothing. Reading the whole frame is a far better answer than
+        # an empty result: the model can find a title in it, and the worst case
+        # is one unreadable detection the user discards.
+        whole_image_fallback = not spines
+        if whole_image_fallback:
+            logger.info('Scan %s: no spines detected, reading the whole image', scan.pk)
+            width, height = image.size
+            spines = [SpineDetection(box=(0, 0, width, height), confidence=0.0)]
 
         with timer.stage('crop'):
-            crops = [prepare_crop(image, spine.box) for spine in spines]
+            crops = (
+                # No cropping or rotating on the fallback path -- there is no
+                # box to pad and the frame is already the right way up.
+                [to_jpeg_bytes(image)]
+                if whole_image_fallback
+                else [prepare_crop(image, spine.box) for spine in spines]
+            )
 
         _set_status(scan, Scan.Status.READING)
         with timer.stage('read'):
@@ -142,7 +158,8 @@ def _persist(scan, spines, crops, reads, results) -> list[Detection]:
     Atomic so a photo is all-or-nothing: a half-written scan would show the
     user a review screen missing books they can see in the photo.
     """
-    detections = []
+    detections: list[Detection] = []
+    by_index: dict[int, Detection] = {}
 
     for spine, crop_bytes, read, result in zip(spines, crops, reads, results):
         best = result.best
@@ -177,7 +194,37 @@ def _persist(scan, spines, crops, reads, results) -> list[Detection]:
             ContentFile(crop_bytes),
             save=False,
         )
+        # Pointers are validated to reference strictly earlier crops, so the
+        # target is always already saved and has a pk.
+        if read.duplicate_of is not None:
+            original = by_index.get(read.duplicate_of)
+            if original is not None:
+                detection.duplicate_of = original
+
         detection.save()
+        by_index[read.index] = detection
         detections.append(detection)
 
     return detections
+
+
+def _normalize_stored_image(scan: Scan, image) -> None:
+    """Rewrite the upload as JPEG if it arrived as anything else.
+
+    Only touches the file when the extension is not already JPEG, so a normal
+    upload costs nothing. The old file is deleted rather than orphaned.
+    """
+    name = (scan.image.name or '').lower()
+    if name.endswith(('.jpg', '.jpeg')):
+        return
+
+    previous = scan.image.name
+    scan.image.save(
+        f'{Path(previous).stem}.jpg',
+        ContentFile(to_jpeg_bytes(image)),
+        save=False,
+    )
+    scan.save(update_fields=['image', 'updated_at'])
+    if previous and previous != scan.image.name:
+        scan.image.storage.delete(previous)
+    logger.info('Scan %s: normalized %s to JPEG', scan.pk, previous)

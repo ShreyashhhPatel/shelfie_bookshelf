@@ -170,6 +170,19 @@ class Detection(models.Model):
         db_index=True,
     )
 
+    # Set when this crop shows the same physical book as an earlier one in the
+    # same scan. Shelved books touch, so the detector boxes some spines twice;
+    # the reader is what notices, since only it can see that two crops carry
+    # the same title. Kept rather than deleted so the review screen can show
+    # "also found here" instead of silently dropping a real detection.
+    duplicate_of = models.ForeignKey(
+        'self',
+        null=True,
+        blank=True,
+        related_name='duplicates',
+        on_delete=models.SET_NULL,
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
