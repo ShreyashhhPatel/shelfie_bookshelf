@@ -10,6 +10,7 @@ import type {
   CatalogBook,
   LibraryBook,
   Paginated,
+  Scan,
   ValidationErrors,
 } from './types';
 
@@ -23,6 +24,15 @@ export const API_BASE_URL = (
 ).replace(/\/$/, '');
 
 const TIMEOUT_MS = 15000;
+
+/**
+ * A scan holds the request open for the entire pipeline -- detection, then a
+ * hosted model read over every crop at once. Measured at roughly 8s for a
+ * 24-spine shelf, so the normal timeout would abort a working scan.
+ */
+const SCAN_TIMEOUT_MS = 180000;
+
+type RequestOptions = RequestInit & { timeoutMs?: number };
 
 /**
  * Any failed request, network or HTTP.
@@ -82,28 +92,35 @@ function isValidationErrors(body: unknown): body is ValidationErrors {
   );
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
+  const { timeoutMs = TIMEOUT_MS, ...fetchInit } = init;
+
   // AbortSignal.timeout() is not reliably present in the Hermes runtime, so
   // the controller is wired by hand.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
-      ...init,
+      ...fetchInit,
       signal: controller.signal,
       headers: {
         Accept: 'application/json',
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-        ...init.headers,
+        // FormData must set its own Content-Type: the multipart boundary is
+        // generated at send time, and overriding it produces a body the
+        // server cannot parse.
+        ...(fetchInit.body && !(fetchInit.body instanceof FormData)
+          ? { 'Content-Type': 'application/json' }
+          : {}),
+        ...fetchInit.headers,
       },
     });
   } catch (cause) {
     const aborted = cause instanceof Error && cause.name === 'AbortError';
     throw new ApiError(
       aborted
-        ? `The server did not respond within ${TIMEOUT_MS / 1000}s.`
+        ? `The server did not respond within ${timeoutMs / 1000}s.`
         : `Could not reach the server at ${API_BASE_URL}.`,
       0,
     );
@@ -157,4 +174,32 @@ export function searchCatalog(query: string): Promise<Paginated<CatalogBook>> {
   return request<Paginated<CatalogBook>>(
     `/api/catalog/search/?q=${encodeURIComponent(trimmed)}`,
   );
+}
+
+/**
+ * Upload a shelf photo and get back the finished scan.
+ *
+ * The backend runs the whole pipeline inside this request, so it is slow by
+ * design in this phase -- detection plus a hosted model read. The timeout is
+ * raised accordingly rather than letting the default abort a working scan.
+ */
+export function uploadScan(uri: string): Promise<Scan> {
+  const form = new FormData();
+  // React Native's FormData takes this {uri, name, type} shape for files; it
+  // is not the web File object and TypeScript's DOM lib does not describe it.
+  form.append('image', {
+    uri,
+    name: 'shelf.jpg',
+    type: 'image/jpeg',
+  } as unknown as Blob);
+
+  return request<Scan>('/api/scans/', {
+    method: 'POST',
+    body: form,
+    timeoutMs: SCAN_TIMEOUT_MS,
+  });
+}
+
+export function getScan(id: number): Promise<Scan> {
+  return request<Scan>(`/api/scans/${id}/`);
 }

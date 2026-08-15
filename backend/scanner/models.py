@@ -93,6 +93,12 @@ class Scan(models.Model):
     )
     error = models.TextField(blank=True)
 
+    # Milliseconds per pipeline stage, e.g. {"detect": 812, "read": 3140}.
+    # Stored rather than logged because the interesting question -- which stage
+    # dominates, and how that changes with shelf size -- can only be answered
+    # across many scans, and the read stage is the one that costs money.
+    timings = models.JSONField(default=dict, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

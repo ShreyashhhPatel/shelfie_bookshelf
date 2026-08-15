@@ -80,3 +80,52 @@ export interface Paginated<T> {
  * `non_field_errors` bucket for anything raised by `validate()`.
  */
 export type ValidationErrors = Record<string, string[] | undefined>;
+
+/** One ranked catalog possibility for a spine, as scored by the matcher. */
+export interface MatchCandidate {
+  catalog_book_id: number | null;
+  title: string;
+  author: string;
+  /** Which of the entry's titles matched -- may be an alternate title. */
+  matched_title: string;
+  score: number;
+  title_score: number;
+  /** null when the spine carried no readable author at all. */
+  author_score: number | null;
+}
+
+/** Mirrors `DetectionSerializer`. One spine within one photo. */
+export interface Detection {
+  id: number;
+  /** [x1, y1, x2, y2] in source-image pixels, origin top-left. */
+  bbox: [number, number, number, number] | number[];
+  crop_url: string | null;
+  /** The detector's confidence that this box is a spine, not that it read right. */
+  confidence: number;
+  raw_title: string;
+  raw_author: string;
+  candidates: MatchCandidate[];
+  match: CatalogBook | null;
+  /** Gap to the runner-up. This, not score, is what gated auto-accept. */
+  margin: number;
+  status: DetectionStatus;
+}
+
+export interface ScanCounts {
+  total: number;
+  auto_matched: number;
+  needs_review: number;
+}
+
+/** Mirrors `ScanSerializer`. */
+export interface Scan {
+  id: number;
+  status: ScanStatus;
+  error: string;
+  image_url: string | null;
+  /** Milliseconds per pipeline stage, e.g. { detect: 1786, read: 5934 }. */
+  timings: Record<string, number>;
+  counts: ScanCounts;
+  detections: Detection[];
+  created_at: string;
+}

@@ -77,6 +77,31 @@ JPEG_QUALITY = 90
 MAX_IMAGE_LONG_EDGE = 2048
 
 # --------------------------------------------------------------------------
+# Spine reading (Gemini)
+# --------------------------------------------------------------------------
+
+# Flash-lite is the cheapest tier that reads spine text reliably. Reading is
+# the only step that costs money per scan, so the model choice is a cost
+# decision as much as an accuracy one.
+GEMINI_MODEL = 'gemini-3.5-flash-lite'
+
+# Every crop from one photo goes in a single request. A shelf becomes one call
+# instead of twenty: the prompt is sent once rather than per spine, and the
+# round trips collapse. See the measured numbers in the commit body.
+#
+# The ceiling exists because a very large shelf would otherwise blow the
+# request size and the model's attention across images at the same time.
+VLM_MAX_CROPS_PER_CALL = 24
+
+# Generous: one request carries every crop from the photo, so this is the
+# whole read stage rather than a single image.
+VLM_TIMEOUT_SECONDS = 120
+
+# Deterministic-ish. Spine reading is transcription, not composition, and the
+# variance at higher temperatures shows up directly as wrong titles.
+VLM_TEMPERATURE = 0.0
+
+# --------------------------------------------------------------------------
 # Catalog matching (phase 4)
 # --------------------------------------------------------------------------
 

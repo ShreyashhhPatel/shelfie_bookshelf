@@ -6,12 +6,24 @@ are useful and testable before a single spine has been detected, which is why
 they land in this phase.
 """
 
+from django.db import transaction
 from django.db.models import Case, IntegerField, Q, Value, When
-from rest_framework import generics
+from django.shortcuts import get_object_or_404
+from rest_framework import generics, status
+from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .constants import normalize_author, normalize_title
-from .models import CatalogBook, LibraryBook
-from .serializers import CatalogBookSerializer, LibraryBookSerializer
+from .models import CatalogBook, Detection, LibraryBook, Scan
+from .serializers import (
+    CatalogBookSerializer,
+    DetectionSerializer,
+    LibraryBookSerializer,
+    ScanCreateSerializer,
+    ScanSerializer,
+)
+from .services.pipeline import run_scan
 
 
 class CatalogSearchView(generics.ListAPIView):
@@ -98,3 +110,122 @@ class LibraryDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     serializer_class = LibraryBookSerializer
     queryset = LibraryBook.objects.select_related('catalog_book')
+
+
+class ScanCreateView(generics.CreateAPIView):
+    """POST /api/scans/
+
+    Runs the whole pipeline inside the request and returns the finished scan,
+    so the client gets results from one call with no polling.
+
+    This is the wrong shape for production and knowingly so. The read stage is
+    seconds of network wait, and holding a request open for it ties up a worker
+    and a SQLite write lock. Moving the pipeline onto a queue is the first
+    scaling change, and it only changes this view.
+    """
+
+    queryset = Scan.objects.all()
+    serializer_class = ScanCreateSerializer
+    parser_classes = (MultiPartParser, FormParser)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        scan = serializer.save()
+
+        run_scan(scan)
+
+        scan.refresh_from_db()
+        detail = ScanSerializer(scan, context=self.get_serializer_context())
+        # 201 even for a failed pipeline: the Scan resource was created, and
+        # its own status field carries the failure. The client reads one place
+        # for outcome rather than branching on the HTTP code.
+        return Response(detail.data, status=status.HTTP_201_CREATED)
+
+
+class ScanDetailView(generics.RetrieveAPIView):
+    """GET /api/scans/<pk>/"""
+
+    serializer_class = ScanSerializer
+    queryset = Scan.objects.prefetch_related('detections__match')
+
+
+class DetectionConfirmView(APIView):
+    """POST /api/detections/<pk>/confirm/
+
+    The review step's yes. Accepts an optional catalog_book_id so a correction
+    ("it's the Batuman one, not the Dostoevsky") confirms in the same call.
+    """
+
+    def post(self, request, pk: int):
+        detection = get_object_or_404(Detection, pk=pk)
+
+        catalog_book = detection.match
+        override_id = request.data.get('catalog_book_id')
+        if override_id is not None:
+            catalog_book = get_object_or_404(CatalogBook, pk=override_id)
+
+        title = (request.data.get('title') or '').strip()
+        author = (request.data.get('author') or '').strip()
+
+        if catalog_book is not None:
+            title = title or catalog_book.title
+            author = author or catalog_book.author
+        else:
+            # Keeping a book the catalog has never heard of. The raw read is
+            # the only record of it, so it has to be usable as one.
+            title = title or detection.raw_title.strip()
+            author = author or detection.raw_author.strip()
+            if not title:
+                return Response(
+                    {'title': ['Required when the detection has no catalog match.']},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        existing = (
+            LibraryBook.objects.filter(catalog_book=catalog_book).first()
+            if catalog_book is not None
+            else None
+        )
+        if existing is not None:
+            # Idempotent rather than an error: scanning a shelf twice is normal
+            # and should not make the review screen unusable.
+            detection.match = catalog_book
+            detection.status = Detection.Status.CONFIRMED
+            detection.save(update_fields=['match', 'status'])
+            return Response(
+                LibraryBookSerializer(existing).data, status=status.HTTP_200_OK
+            )
+
+        with transaction.atomic():
+            library_book = LibraryBook.objects.create(
+                catalog_book=catalog_book,
+                title=title,
+                author=author,
+                source=LibraryBook.Source.SCAN,
+                detection=detection,
+            )
+            detection.match = catalog_book
+            detection.status = Detection.Status.CONFIRMED
+            detection.save(update_fields=['match', 'status'])
+
+        return Response(
+            LibraryBookSerializer(library_book).data, status=status.HTTP_201_CREATED
+        )
+
+
+class DetectionDiscardView(APIView):
+    """POST /api/detections/<pk>/discard/
+
+    The review step's no. The Detection is kept, not deleted -- it is the
+    record of what the pipeline saw, and throwing it away would make a false
+    positive impossible to study later.
+    """
+
+    def post(self, request, pk: int):
+        detection = get_object_or_404(Detection, pk=pk)
+        detection.status = Detection.Status.DISCARDED
+        detection.save(update_fields=['status'])
+        return Response(
+            DetectionSerializer(detection, context={'request': request}).data
+        )

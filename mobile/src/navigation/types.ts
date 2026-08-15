@@ -8,8 +8,17 @@
 
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
+import type { Scan } from '../api/types';
+
 export type RootStackParamList = {
   Library: undefined;
+  Scan: undefined;
+  /**
+   * `scan` is passed through after a fresh upload, where the finished scan is
+   * already in hand and refetching it would be a wasted round trip. Arriving
+   * any other way carries only the id and the screen fetches it.
+   */
+  Results: { scanId: number; scan?: Scan };
 };
 
 export type RootStackScreenProps<T extends keyof RootStackParamList> =

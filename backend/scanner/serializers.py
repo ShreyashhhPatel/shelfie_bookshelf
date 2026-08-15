@@ -1,8 +1,8 @@
-"""Serializers for the endpoints that need no pipeline behind them."""
+"""API shapes. Mirrored by hand in mobile/src/api/types.ts."""
 
 from rest_framework import serializers
 
-from .models import CatalogBook, LibraryBook
+from .models import CatalogBook, Detection, LibraryBook, Scan
 
 
 class CatalogBookSerializer(serializers.ModelSerializer):
@@ -72,3 +72,85 @@ class LibraryBookSerializer(serializers.ModelSerializer):
         if value is not None and LibraryBook.objects.filter(catalog_book=value).exists():
             raise serializers.ValidationError('Already in the library.')
         return value
+
+
+class DetectionSerializer(serializers.ModelSerializer):
+    """One spine and everything known about it.
+
+    `candidates` is passed through as stored rather than re-serialized: it is
+    already the ranked list the review screen needs, computed once at scan
+    time, and recomputing it per request would mean reloading the catalog.
+    """
+
+    match = CatalogBookSerializer(read_only=True)
+    crop_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Detection
+        fields = (
+            'id',
+            'bbox',
+            'crop_url',
+            'confidence',
+            'raw_title',
+            'raw_author',
+            'candidates',
+            'match',
+            'margin',
+            'status',
+        )
+        read_only_fields = fields
+
+    def get_crop_url(self, detection) -> str | None:
+        if not detection.crop:
+            return None
+        request = self.context.get('request')
+        url = detection.crop.url
+        # Absolute, because the client is a phone on the LAN and a relative
+        # media path resolves against the device, not the API host.
+        return request.build_absolute_uri(url) if request else url
+
+
+class ScanSerializer(serializers.ModelSerializer):
+    detections = DetectionSerializer(many=True, read_only=True)
+    image_url = serializers.SerializerMethodField()
+    counts = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Scan
+        fields = (
+            'id',
+            'status',
+            'error',
+            'image_url',
+            'timings',
+            'counts',
+            'detections',
+            'created_at',
+        )
+        read_only_fields = fields
+
+    def get_image_url(self, scan) -> str | None:
+        if not scan.image:
+            return None
+        request = self.context.get('request')
+        return request.build_absolute_uri(scan.image.url) if request else scan.image.url
+
+    def get_counts(self, scan) -> dict:
+        """Pre-counted so the client does not have to filter the list itself."""
+        detections = list(scan.detections.all())
+        return {
+            'total': len(detections),
+            'auto_matched': sum(
+                1 for d in detections if d.status == Detection.Status.AUTO_MATCHED
+            ),
+            'needs_review': sum(
+                1 for d in detections if d.status == Detection.Status.NEEDS_REVIEW
+            ),
+        }
+
+
+class ScanCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Scan
+        fields = ('id', 'image')
