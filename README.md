@@ -238,6 +238,51 @@ The whole thing runs **synchronously** inside the request — see
 
 ---
 
+## Catalog construction
+
+`catalog/catalog.csv` holds **114 entries**, designed as an adversarial test
+fixture rather than a booklist.
+
+The governing question was: *what would let a matcher appear correct while being
+wrong?* Fuzzy matching succeeds trivially when every entry sits far from every
+other, so a catalog of unrelated titles validates nothing. Each ambiguity class
+below was planted deliberately, and the matcher is required to survive all of
+them.
+
+| Planted | Instances | What it breaks if you get it wrong |
+|---|---|---|
+| Two editions of one work | `Fahrenheit 451` ×2 (1953, 2013) | Identical title *and* author — only the year separates them |
+| Regional retitles | 31 rows carry `alt_titles` | *Northern Lights* / *The Golden Compass*; Philosopher's / Sorcerer's Stone |
+| Different books, same title | `The Power` ×2, `The Secret` ×2 | Alderman vs Byrne; Byrne vs Garwood |
+| Omnibus vs its volumes | 2 omnibus rows + their volumes | LOTR and Hitchhiker's, each alongside the individual books |
+| Substring titles | *Dune* / *Dune Messiah*; the Foundation trilogy | A `contains` match conflates them; fuzzy nearly does |
+| Author name variants | Same author stored 3 ways | `Orwell, George` vs `George Orwell`; `García` vs `Garcia`; `J.K.` vs `J. K.` |
+
+Author names are stored **inconsistently by design** — the same author appears in
+several forms across rows, so matching cannot assume a normalised catalog. Real
+catalogs never are.
+
+The remaining entries span 1813–2021 and are weighted toward titles an
+engineering team plausibly owns, so a demo exercises genuine matches rather than
+misses alone. 37 carry a `series`, 113 a `year`.
+
+Five entries — *The Art of War*, *The 48 Laws of Power*, *This Is Going to Hurt*,
+*And Then There Were None*, *The Thirteen Problems* — were added after
+photographing my own shelf, giving the committed test images full end-to-end
+coverage through detection, match, review, and library.
+
+**Data integrity: `spine_color` is populated only for those five books.** The
+other 109 are empty because the matcher reads that field, and inventing a colour
+for a book nobody here has seen would feed fabricated data into a scoring path.
+Empty means unknown, and the tie-break skips it — an explicit rule, applied
+consistently.
+
+Every trap is documented with its expected resolution in
+[`AMBIGUITIES.md`](backend/catalog/AMBIGUITIES.md), and each is pinned by a test
+— so "the matcher handles this" is verified by the suite, not asserted here.
+
+---
+
 ## Matching
 
 The differentiating idea: **confidence is separation, not just similarity.**
@@ -479,6 +524,51 @@ the catalog can score 0.855 against something unrelated (*And Then There Were
 None* → a TensorFlow textbook) and reach the review card as a plausible
 candidate instead of landing in `unmatched`. A token-prefix rule falling back to
 `fuzz.ratio` fixes it while preserving every planted ambiguity.
+
+Also unfinished, deliberately: provenance badges and a detection detail view in
+the library, and an evaluation set larger than two shelves.
+
+---
+
+## With another day
+
+**The two bugs above, first.** Both are scoped rather than open-ended — the
+matcher fix is roughly fifteen lines with a design already validated against all
+six planted ambiguities, and the library fix is two fields plus a migration.
+Neither is research; they were a time decision, not an unsolved problem.
+
+**A dynamic catalog.** Today it is a static CSV loaded wholesale, and
+`load_catalog` deletes every row before recreating it. I would make loading an
+incremental upsert — which fixes the library-blanking bug as a side effect — and
+then let an unmatched read reach outward to Open Library or Google Books and
+become a catalog entry rather than a dead end. That is the honest answer to the
+sharpest limitation here: a fixed 114-entry catalog cannot contain *your* books,
+so the interesting path for any real user is the one that ends in `unmatched`.
+
+**Gemma 4 running locally, replacing the hosted call.** This removes the
+per-scan cost entirely and deletes the network round-trip, which is currently
+~2s of a ~2.6s scan. The reader is already provider-pluggable behind
+`VLM_PROVIDER`, so it is a new transport module rather than a rewrite. The
+tradeoff needs measuring rather than assuming: local CPU inference may well be
+slower than the API call it replaces, and read quality has to be benchmarked
+against the current baseline before "free" counts as "better."
+
+**UI depth.** Provenance badges distinguishing auto-matched from
+corrected-in-review from custom entry, and a detail view putting the original
+spine crop beside the matched catalog record and the confidence that produced
+it. Both make the confidence model visible rather than merely implemented.
+
+**Live detection in the camera preview — deliberately not yet.** Running the
+detector per-frame is the obvious next feature and I am choosing to skip it,
+because it would surface YOLO's instability rather than fix it. Boxes flicker
+frame to frame; a spine detected at frame 10 vanishes at frame 11 and returns at
+frame 12. Running detection once on a still hides that, and the dedup passes
+clean up what remains. Putting it in a live preview would make the product feel
+unreliable while producing exactly the same final result. It needs temporal
+smoothing across frames — track boxes, require a detection to persist before
+drawing it — and that is a real piece of work, not a UI toggle. Shipping the
+flicker would be shipping a worse-feeling product for a more impressive-sounding
+feature.
 
 ---
 
